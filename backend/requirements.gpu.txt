@@ -1,0 +1,14 @@
+# PyTorch, CUDA ve cuDNN NGC taban imajından gelir. Burada torch kurmayın.
+fastapi>=0.115,<1.0
+# PDF, DOCX, PPTX ve XLSX'i Markdown'a dönüştüren, tablo yapısını koruyan katman.
+# GPU imajındaki Torch/CUDA sürümünü değiştirmemesi için Dockerfile'daki NVIDIA
+# constraint dosyasıyla birlikte kurulur.
+docling>=2.60,<3.0
+fastembed>=0.5,<1.0
+httpx>=0.28,<1.0
+pydantic-settings>=2.6,<3.0
+python-multipart>=0.0.20,<1.0
+qdrant-client>=1.14,<2.0
+sentence-transformers>=5.0,<6.0
+sqlalchemy>=2.0,<3.0
+uvicorn[standard]>=0.34,<1.0

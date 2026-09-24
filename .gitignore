@@ -1,0 +1,16 @@
+backend/.venv/
+backend/.pytest_cache/
+backend/data/
+backend/*.db
+backend/.env
+data/
+Doc/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+.agents/
+.codex/

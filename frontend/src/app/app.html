@@ -1,0 +1,1067 @@
+<main class="workspace">
+  <header class="topbar">
+    <a class="brand" routerLink="/" aria-label="KonuLab ana sayfa">
+      <span class="brand-mark">K</span>
+      <span>KonuLab</span>
+    </a>
+    <nav aria-label="Ana menü">
+      <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">Ana Sayfa</a>
+      <a routerLink="/harita" routerLinkActive="active">Öğrenme Haritası</a>
+      <a routerLink="/kaynaklar" routerLinkActive="active">Kaynaklar</a>
+      <a routerLink="/kalite" routerLinkActive="active">Kalite Merkezi</a>
+      <a routerLink="/ayarlar" routerLinkActive="active">Ayarlar</a>
+    </nav>
+    <button type="button" class="profile" (click)="openProfileDialog()" aria-label="Yerel profili aç" title="Yerel profil">
+      {{ profileInitials() }}
+    </button>
+  </header>
+
+  @if (error()) {
+    <div class="connection-warning" role="status">{{ error() }}</div>
+  }
+  @if (toast(); as notice) {
+    <div class="toast" [class.error]="notice.tone === 'error'" role="status" aria-live="polite">
+      <span>{{ notice.message }}</span>
+      <button type="button" aria-label="Bildirimi kapat" (click)="dismissToast()">×</button>
+    </div>
+  }
+  @if (profileDialogOpen()) {
+    <div class="profile-dialog" role="presentation" (click)="closeProfileDialog()">
+      <section class="profile-dialog-card" role="dialog" aria-modal="true" aria-labelledby="profile-dialog-title" (click)="$event.stopPropagation()">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Yerel profil</p>
+            <h2 id="profile-dialog-title">Öğrenme kaydın</h2>
+          </div>
+          <button type="button" class="close-analysis-card" (click)="closeProfileDialog()" aria-label="Profili kapat">×</button>
+        </div>
+        <p>İlerleme, quiz sonuçları ve tekrar planı bu makinedeki SQLite veritabanında saklanır.</p>
+        <label class="profile-name-field">
+          <span>Görünen ad</span>
+          <input [value]="profileNameDraft()" (input)="updateProfileName($any($event.target).value)" maxlength="80" autocomplete="name">
+        </label>
+        <small class="profile-sync" [class.offline]="progressSyncState() === 'offline'">
+          @if (progressSyncState() === 'ready') { SQLite ile eşitlendi. }
+          @else if (progressSyncState() === 'offline') { Bağlantı yok; değişiklikler geçici olarak bu tarayıcıda tutuluyor. }
+          @else { Yerel profil hazırlanıyor… }
+        </small>
+        <section class="account-box">
+          @if (account(); as currentAccount) {
+            <p><strong>{{ currentAccount.display_name }}</strong> · @{{ currentAccount.username }}</p>
+            <small>Sohbetlerin bu kullanıcı hesabına ayrılır.</small>
+            <button type="button" class="text-action" (click)="logout()">Oturumu kapat</button>
+          } @else {
+            <div class="account-tabs">
+              <button type="button" [class.active]="authMode() === 'login'" (click)="setAuthMode('login')">Giriş yap</button>
+              <button type="button" [class.active]="authMode() === 'register'" (click)="setAuthMode('register')">Hesap oluştur</button>
+            </div>
+            <label><span>Kullanıcı adı</span><input [value]="authUsername()" (input)="updateAuthField('username', $any($event.target).value)" autocomplete="username"></label>
+            <label><span>Parola</span><input type="password" [value]="authPassword()" (input)="updateAuthField('password', $any($event.target).value)" [autocomplete]="authMode() === 'login' ? 'current-password' : 'new-password'"></label>
+            @if (authError()) { <small class="auth-error">{{ authError() }}</small> }
+            <button type="button" class="secondary-action" [disabled]="authLoading()" (click)="submitAuth()">{{ authLoading() ? 'İşleniyor…' : authMode() === 'login' ? 'Giriş yap' : 'Hesap oluştur ve ilerlemeyi bağla' }}</button>
+          }
+        </section>
+        <section class="system-status-box" aria-label="Yerel sistem durumu">
+          <div class="system-status-heading">
+            <div><strong>Yerel sistem durumu</strong><small>SQLite ve arama indeksi</small></div>
+            <button type="button" class="text-action" [disabled]="systemStatusLoading()" (click)="loadSystemStatus()">Yenile</button>
+          </div>
+          @if (systemStatusLoading()) {
+            <p>Durum denetleniyor…</p>
+          } @else if (systemStatus(); as status) {
+            <p [class.system-degraded]="status.status === 'degraded'">
+              SQLite: {{ status.database === 'ok' ? 'erişilebilir' : 'erişilemiyor' }} ·
+              Qdrant: {{ status.qdrant === 'ok' ? 'erişilebilir' : 'erişilemiyor' }}
+            </p>
+            @if (status.latest_backup; as backup) {
+              <small>Son yedek: {{ backup.created_at | date:'short' }}</small>
+            } @else {
+              <small>Henüz yedek oluşturulmadı.</small>
+            }
+          } @else {
+            <p class="system-degraded">Durum şu an okunamadı. API bağlantısını kontrol edin.</p>
+          }
+          <button type="button" class="secondary-action" [disabled]="backupCreating()" (click)="createBackup()">
+            {{ backupCreating() ? 'Yedekleniyor…' : 'Şimdi yedekle' }}
+          </button>
+        </section>
+        <div class="dialog-actions">
+          <button type="button" class="action secondary" (click)="closeProfileDialog()">Kapat</button>
+          <button type="button" class="action" [disabled]="progressSyncState() !== 'ready'" (click)="saveProfileName()">Kaydet</button>
+        </div>
+      </section>
+    </div>
+  }
+  @if (sourceViewerLoading() || sourceViewer() || sourceViewerError()) {
+    <div class="source-viewer-dialog" role="presentation" (click)="closeSourceViewer()">
+      <section class="source-viewer-card" role="dialog" aria-modal="true" aria-labelledby="source-viewer-title" (click)="$event.stopPropagation()">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">Kaynak bağlamı</p>
+            <h2 id="source-viewer-title">@if (sourceViewer(); as source) { {{ source.lesson_title || source.source_name }} } @else { Kaynak açılıyor } </h2>
+          </div>
+          <button type="button" class="close-analysis-card" (click)="closeSourceViewer()" aria-label="Kaynak penceresini kapat">×</button>
+        </div>
+        @if (sourceViewerLoading()) {
+          <p class="source-viewer-status">Kaynağın ilgili satırları hazırlanıyor…</p>
+        } @else if (sourceViewerError(); as sourceError) {
+          <p class="chat-error">{{ sourceError }}</p>
+        } @else if (sourceViewer(); as source) {
+          <p class="source-viewer-intro">{{ source.source_name }} · Alıntılanan bölüm vurgulanmıştır; öncesi ve sonrası bağlam için komşu parçalar da gösterilir.</p>
+          @if (source.assets.length) {
+            <details class="source-viewer-assets">
+              <summary>Bu kaynaktaki görsel ekler ({{ source.assets.length }})</summary>
+              <div>
+                @for (asset of source.assets; track asset.id) {
+                  <figure>
+                    <img [src]="documentAssetUrl(asset)" [alt]="(asset.page_number ? asset.page_number + '. sayfa ' : '') + asset.kind">
+                    <figcaption>
+                      <strong>{{ asset.page_number ? asset.page_number + '. sayfa · ' : '' }}{{ asset.kind === 'table' ? 'Tablo' : 'Görsel' }}</strong>
+                      @if (asset.description) { <p>{{ asset.description }}</p> }
+                      @if (asset.structured_markdown) { <details><summary>{{ asset.row_count ?? '—' }} satır · {{ asset.column_count ?? '—' }} sütun</summary><pre>{{ asset.structured_markdown }}</pre></details> }
+                      @if (asset.needs_review) { <em>Model belirsizlik bildirdi; kaynaktan doğrulayın.</em> }
+                    </figcaption>
+                  </figure>
+                }
+              </div>
+            </details>
+          }
+          <div class="source-viewer-sections">
+            @for (section of source.sections; track section.id) {
+              <article class="source-viewer-section" [class.focus]="section.is_focus">
+                <div>
+                  <span>{{ section.heading_path }}</span>
+                  <small>Satır {{ section.line_start }}–{{ section.line_end }}</small>
+                </div>
+                <pre>{{ section.content }}</pre>
+              </article>
+            }
+          </div>
+        }
+      </section>
+    </div>
+  }
+
+  @if (currentPage() === 'home') {
+  <section class="hero">
+    <div>
+      <p class="eyebrow">NLP öğrenme çalışma alanı</p>
+      <h1>Konuları kaynaklarıyla birlikte öğren.</h1>
+      <p class="intro">
+        Ders sırasını koru, istediğin konunun derinliğine in ve yanıtların hangi kaynaktan
+        geldiğini her zaman gör.
+      </p>
+    </div>
+    <aside class="hero-card">
+      <span>Aktif kaynak</span>
+      <strong>{{ activeDocuments().length }}</strong>
+      <small>öğrenmeye hazır ve indekslenmiş kaynak</small>
+    </aside>
+  </section>
+
+  @if (dashboardLoading()) {
+    <section class="dashboard-panel"><p class="study-empty">Öğrenme özetin hazırlanıyor…</p></section>
+  } @else if (dashboardError()) {
+    <section class="dashboard-panel"><p class="chat-error">{{ dashboardError() }}</p></section>
+  } @else if (dashboard(); as learnerDashboard) {
+    <section class="dashboard-panel" aria-label="Öğrenci ana paneli">
+      <div class="dashboard-heading">
+        <div><p class="eyebrow">Öğrenme görünümü</p><h2>{{ learnerDashboard.display_name }}, bugün ne çalışacaksın?</h2></div>
+        <span>{{ learnerDashboard.total_completed_steps }} / {{ learnerDashboard.total_steps }} adım</span>
+      </div>
+      <div class="dashboard-stats">
+        <article><span>Bugünkü tekrar</span><strong>{{ learnerDashboard.today_reviews.length }}</strong><small>hatırlama adımı</small></article>
+        <article><span>Devam eden konu</span><strong>{{ learnerDashboard.in_progress_topics }}</strong><small>yarım kalan çalışma</small></article>
+        <article><span>Tamamlanan konu</span><strong>{{ learnerDashboard.completed_topics }}</strong><small>{{ learnerDashboard.total_topics }} aktif konudan</small></article>
+      </div>
+      <div class="dashboard-columns">
+        <section>
+          <div class="dashboard-section-heading"><h3>Bugünkü tekrarlar</h3><small>Önce bunları pekiştir</small></div>
+          @if (learnerDashboard.today_reviews.length) {
+            <div class="dashboard-list">
+              @for (review of learnerDashboard.today_reviews; track review.topic_id + review.step_id) {
+                <button type="button" class="dashboard-row" (click)="openDashboardReview(review)">
+                  <span class="dashboard-row-icon" [class.overdue]="review.overdue">↻</span>
+                  <span><strong>{{ review.heading }}</strong><small>{{ review.topic_title }} @if (review.overdue) { · Gecikmiş }</small></span>
+                  <em>Çalış →</em>
+                </button>
+              }
+            </div>
+          } @else { <p class="dashboard-empty">Bugün için bekleyen tekrar yok.</p> }
+        </section>
+        <section>
+          <div class="dashboard-section-heading"><h3>Yarım kalan konular</h3><small>Kaldığın yerden devam et</small></div>
+          @if (learnerDashboard.in_progress.length) {
+            <div class="dashboard-list">
+              @for (topic of learnerDashboard.in_progress; track topic.topic_id) {
+                <button type="button" class="dashboard-row" (click)="openDashboardTopic(topic.topic_id)">
+                  <span class="dashboard-row-icon">◌</span>
+                  <span><strong>{{ topic.title }}</strong><small>{{ topic.completed_steps }}/{{ topic.total_steps }} adım · {{ topic.review_count }} tekrar</small></span>
+                  <em>{{ topic.completion_percent }}%</em>
+                </button>
+              }
+            </div>
+          } @else { <p class="dashboard-empty">Henüz yarım kalan bir konu yok.</p> }
+        </section>
+      </div>
+      @if (learnerDashboard.recent_quizzes.length) {
+        <section class="dashboard-quizzes">
+          <div class="dashboard-section-heading"><h3>Son quizler</h3><small>Kaynaklı mini quiz sonuçların</small></div>
+          <div class="dashboard-quiz-list">
+            @for (topic of learnerDashboard.recent_quizzes; track topic.topic_id) {
+              <button type="button" (click)="openDashboardTopic(topic.topic_id)"><strong>{{ topic.title }}</strong><span>{{ dashboardQuizLabel(topic) }}</span><small>{{ dashboardDate(topic.last_quiz_at) }}</small></button>
+            }
+          </div>
+        </section>
+      }
+    </section>
+  }
+
+  <section class="home-overview" aria-label="Çalışma alanı bölümleri">
+    <a routerLink="/harita" class="home-card">
+      <span class="home-card-icon">⌘</span>
+      <div><p class="eyebrow">Adım 1</p><h2>Öğrenme haritası</h2><p>Dersleri konu başlıkları ve kapsamlarıyla açın.</p></div>
+      <span aria-hidden="true">→</span>
+    </a>
+    <a routerLink="/kaynaklar" class="home-card">
+      <span class="home-card-icon">↑</span>
+      <div><p class="eyebrow">Adım 2</p><h2>Kaynakları yönet</h2><p>Doküman ekleyin, konu taslağını onaylayın ve indeksleme durumunu izleyin.</p></div>
+      <span aria-hidden="true">→</span>
+    </a>
+    <a routerLink="/harita" class="home-card">
+      <span class="home-card-icon">◌</span>
+      <div><p class="eyebrow">Adım 3</p><h2>Konuyu çalış</h2><p>Öğrenme, özet, sohbet ve alıştırmaları tek çalışma alanında kullanın.</p></div>
+      <span aria-hidden="true">→</span>
+    </a>
+  </section>
+  }
+
+  @if (currentPage() === 'map') {
+  <section class="page-heading">
+    <p class="eyebrow">Ders ve konu görünümü</p>
+    <h1>Öğrenme haritanızı konu konu keşfedin.</h1>
+    <p class="intro">Bir ders ve konu seçin; öğrenme, özet, kaynaklı sohbet ve alıştırmaları aynı çalışma alanından yönetin.</p>
+  </section>
+  <section class="content-grid">
+    <aside class="topic-panel" aria-label="Ders ve konu haritası">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Öğrenme haritası</p>
+          <h2>Dersler</h2>
+        </div>
+        <span class="local-badge">{{ lessonGroups().length }}</span>
+      </div>
+
+      @if (activeDocuments().length) {
+        <ul class="lesson-tree">
+          @for (group of lessonGroups(); track group.id) {
+            <li>
+              <button
+                type="button"
+                class="lesson-button"
+                [class.expanded]="isLessonExpanded(group.id)"
+                [attr.aria-expanded]="isLessonExpanded(group.id)"
+                (click)="toggleLesson(group)">
+                <span>{{ group.title }}</span>
+                <small>{{ group.documents.length }} kaynak</small>
+                <span aria-hidden="true">{{ isLessonExpanded(group.id) ? '⌃' : '⌄' }}</span>
+              </button>
+              @if (isLessonExpanded(group.id)) {
+                <div class="lesson-topics">
+                  @if (isLessonGroupLoading(group)) {
+                    <p>Konular yükleniyor…</p>
+                  } @else if (lessonGroupTopics(group).length) {
+                    @if (group.documents.length > 1) {
+                      <p class="lesson-source-list">{{ group.documents.length }} kaynak bu ders altında birleştirildi.</p>
+                    }
+                    @for (proposal of lessonGroupTopics(group); track proposal.title) {
+                      <button
+                        type="button"
+                        class="lesson-topic-button"
+                        (click)="selectTopicFromProposal(proposal.title)">
+                        <strong>{{ proposal.title }}</strong>
+                        @if (proposal.description) { <small>{{ proposal.description }}</small> }
+                        <em>{{ topicProgressLabel(proposal.title) }}</em>
+                      </button>
+                    }
+                  } @else {
+                    <p>Bu ders için konu taslağı henüz hazır değil.</p>
+                  }
+                </div>
+              }
+            </li>
+          }
+        </ul>
+      } @else {
+        <p class="empty-state">Bir dokümanı onaylayıp indekslediğinizde öğrenme haritası burada oluşur.</p>
+      }
+    </aside>
+
+    <section class="topic-detail">
+      @if (selectedTopic(); as topic) {
+        <p class="eyebrow">Seçili konu</p>
+        <h2>{{ topic.title }}</h2>
+        <p class="description">{{ topic.description }}</p>
+
+        <section class="prerequisite-card" aria-label="Konu ön koşulları">
+          <div class="prerequisite-heading">
+            <div>
+              <p class="eyebrow">Öğrenme sırası</p>
+              <h3>Ön koşullar</h3>
+            </div>
+          </div>
+          @if (!prerequisiteEditing()) {
+            <div class="prerequisite-actions" aria-label="Ön koşul işlem seçenekleri">
+              <div class="prerequisite-action-option">
+                <button type="button" class="primary-action" [disabled]="prerequisiteSuggesting()" (click)="suggestPrerequisites()">{{ prerequisiteSuggesting() ? 'Öneri hazırlanıyor…' : 'Yapay zekâ ile öneri al' }}</button>
+                <small>Model önerir; kaydetmeden önce her öneriyi inceleyebilirsin.</small>
+              </div>
+              <div class="prerequisite-action-option">
+                <button type="button" class="secondary-action" (click)="beginPrerequisiteEditing()">Konuları kendim seçeyim</button>
+                <small>Ön koşulları elle seç, kaldır ve kaydet.</small>
+              </div>
+            </div>
+          }
+          @if (prerequisiteEditing()) {
+            <p>Bu konuya başlamadan önce anlaşılması gereken konuları seçin. Döngü oluşturan seçimler kaydedilmez.</p>
+            <div class="prerequisite-options">
+              @for (candidate of prerequisiteCandidates(); track candidate.id) {
+                <label><input type="checkbox" [checked]="prerequisiteDraftIds().includes(candidate.id)" (change)="togglePrerequisite(candidate.id, $any($event.target).checked)"><span>{{ candidate.title }}</span></label>
+              }
+            </div>
+            @if (prerequisiteSuggestions().length) { <p class="prerequisite-suggestion-note">Önerilenler seçili geldi; kaydetmeden önce gerekçelerini değerlendir: @for (suggestion of prerequisiteSuggestions(); track suggestion.topic_id) { <span><strong>{{ suggestion.title }}:</strong> {{ suggestion.reason }}</span> }</p> }
+            <div class="dialog-actions">
+              <button type="button" class="secondary-action" [disabled]="prerequisiteSaving()" (click)="cancelPrerequisiteEditing()">Vazgeç</button>
+              <button type="button" class="primary-action" [disabled]="prerequisiteSaving()" (click)="savePrerequisites()">{{ prerequisiteSaving() ? 'Kaydediliyor…' : 'Ön koşulları kaydet' }}</button>
+            </div>
+          } @else if (topicPrerequisites().length) {
+            <div class="prerequisite-list">
+              @for (prerequisite of topicPrerequisites(); track prerequisite.id) {
+                <button type="button" (click)="selectTopic(prerequisite)">{{ prerequisite.title }} <span>Önce çalış →</span></button>
+              }
+            </div>
+          } @else {
+            <p>Bu konu için henüz ön koşul tanımlanmadı. Konular bağımsız çalışılabilir veya öğrenme sırasını siz belirleyebilirsiniz.</p>
+          }
+        </section>
+
+        <div class="study-tabs" role="tablist" aria-label="Konu çalışma biçimi">
+          <button type="button" role="tab" [attr.aria-selected]="studyMode() === 'learn'" [class.active]="studyMode() === 'learn'" (click)="setStudyMode('learn')">Öğren</button>
+          <button type="button" role="tab" [attr.aria-selected]="studyMode() === 'summary'" [class.active]="studyMode() === 'summary'" (click)="setStudyMode('summary')">Özet</button>
+          <button type="button" role="tab" [attr.aria-selected]="studyMode() === 'chat'" [class.active]="studyMode() === 'chat'" (click)="setStudyMode('chat')">Sohbet</button>
+          <button type="button" role="tab" [attr.aria-selected]="studyMode() === 'practice'" [class.active]="studyMode() === 'practice'" (click)="setStudyMode('practice')">Mini quiz</button>
+        </div>
+
+        @if (studyMode() === 'learn') {
+          <section class="study-panel">
+            @if (studyLoading()) {
+              <p class="study-empty">Öğrenme adımları kaynaklardan hazırlanıyor…</p>
+            } @else if (studyError()) {
+              <p class="chat-error">{{ studyError() }}</p>
+            } @else if (currentStudyStep(); as step) {
+              <div class="study-step-heading">
+                <div>
+                  <p class="eyebrow">Öğrenme adımı {{ studyStepIndex() + 1 }} / {{ studySteps().length }}</p>
+                  <h3>{{ step.heading }}</h3>
+                </div>
+                <span class="step-type" [class.example]="step.content_type === 'example'" [class.code]="step.content_type === 'code'">{{ step.content_type === 'example' ? 'Örnek' : step.content_type === 'code' ? 'Kod' : step.content_type === 'exercise' ? 'Alıştırma' : 'Açıklama' }}</span>
+              </div>
+              <section class="topic-progress" aria-label="Konu ilerleme durumu">
+                <div><span>Bu konuda ilerleme</span><strong>{{ currentTopicProgress().completed }} / {{ currentTopicProgress().total }} adım</strong></div>
+                <div class="progress-track" aria-hidden="true"><span [style.width.%]="currentTopicProgress().percent"></span></div>
+                @if (currentTopicProgress().complete) { <small class="topic-complete">Konu ve planlanmış tekrarlar tamamlandı.</small> }
+                @else if (currentTopicProgress().reviewCount) { <small>{{ currentTopicProgress().reviewCount }} adım planlı tekrar bekliyor.</small> }
+              </section>
+              <div class="study-source"><span>{{ step.source_name }} · satır {{ step.line_start }}–{{ step.line_end }}</span><button type="button" class="text-action" (click)="openSource(step.section_ids[0])">Kaynakta göster</button></div>
+              <article class="study-content" [class.code]="step.content_type === 'code'">{{ step.content }}</article>
+              <div class="study-actions">
+                <div class="study-navigation" aria-label="Öğrenme adımı gezinme">
+                  <button type="button" class="secondary-action" [disabled]="studyStepIndex() === 0" (click)="moveStudyStep(-1)">← Önceki</button>
+                  <button type="button" class="secondary-action" [disabled]="studyStepIndex() === studySteps().length - 1" (click)="moveStudyStep(1)">Sonraki →</button>
+                </div>
+                <div class="study-helper-actions">
+                  <button type="button" class="secondary-action" (click)="toggleCurrentStepCompletion()">{{ currentReviewPlan() ? 'Tekrarı tamamla' : isCurrentStepComplete() ? 'Tamamlandı ✓' : 'Adımı tamamla' }}</button>
+                  @if (currentReviewPlan(); as review) { <span class="review-due">Tekrar: {{ reviewDueLabel(review) }} · {{ reviewPlanLabel(review) }}</span> }
+                  <button type="button" class="secondary-action" [disabled]="stepAssistantLoading()" (click)="askAboutCurrentStep('explain')">{{ stepAssistantLoading() ? 'Yanıt hazırlanıyor…' : 'Bu adımı açıkla' }}</button>
+                  <button type="button" class="secondary-action" [disabled]="stepAssistantLoading()" (click)="askAboutCurrentStep('check')">Kendini kontrol et</button>
+                </div>
+              </div>
+              @if (stepAssistantError()) {
+                <p class="chat-error">{{ stepAssistantError() }}</p>
+              }
+              @if (stepAssistantResponse(); as assistantResponse) {
+                <article class="step-assistant" aria-live="polite">
+                  <p class="eyebrow">Adım asistanı · {{ assistantResponse.model }}</p>
+                  <p>{{ assistantResponse.answer }}</p>
+                  <div class="citation-list">
+                    @for (source of assistantResponse.sources; track source.index) {
+                      <div class="citation-item" [class.weak]="isWeakSource(source)">
+                        <button type="button" (click)="openSource(source.section_id)">[K{{ source.index }}] {{ source.source_name }} · {{ source.heading_path }} · satır {{ source.line_start }}–{{ source.line_end }}</button>
+                        <button type="button" class="text-action" [disabled]="!source.section_id || isWeakSource(source)" (click)="reportSourceMismatch(source, assistantResponse.conversation_id)">{{ isWeakSource(source) ? '✓ Kaynak eşleşmesi incelemeye gönderildi' : 'Bu kaynak alakasız' }}</button>
+                      </div>
+                    }
+                  </div>
+                  @if (answerFeedbackState(assistantResponse); as feedbackState) {
+                    <div class="answer-feedback recorded" [class.issue]="feedbackState === 'unhelpful'"><span>{{ feedbackState === 'helpful' ? '✓ Geri bildirim: Bu açıklama faydalı olarak kaydedildi.' : '⚑ Geri bildirim: Bu açıklama kalite incelemesine gönderildi.' }}</span><small>Kararı Kalite Merkezi’nden yönetebilirsin.</small></div>
+                  } @else {
+                    <div class="answer-feedback"><span>Bu açıklama öğrenmene yardımcı oldu mu?</span><button type="button" class="text-action" (click)="sendAnswerFeedback(true, assistantResponse)">Evet, faydalıydı</button><button type="button" class="text-action" (click)="sendAnswerFeedback(false, assistantResponse)">Hayır, yeterli değildi</button></div>
+                  }
+                  <button type="button" class="text-action" (click)="continueStepInChat()">Bu yanıt üzerinden sohbete devam et</button>
+                </article>
+              }
+            } @else {
+              <p class="study-empty">Bu konu için henüz onaylanmış bir kaynak adımı bulunmuyor.</p>
+            }
+          </section>
+        } @else if (studyMode() === 'summary') {
+          <section class="study-panel">
+            <p class="eyebrow">Kaynaklı özet</p>
+            <h3>Konuyu burada, kaynaklarıyla birlikte özetle</h3>
+            <p>Yerel model yalnızca seçili konuya ait kaynaklardan ana fikirleri, önemli kavramları ve kısa örnekleri çıkarır.</p>
+            @if (summaryLoading()) { <p class="study-empty">Kaynaklar okunuyor, özet hazırlanıyor…</p> }
+            @if (summaryError()) { <p class="chat-error">{{ summaryError() }}</p> }
+            @if (summaryResponse(); as summary) {
+              <article class="step-assistant summary-answer" aria-live="polite">
+                <p class="eyebrow">Kaynaklı özet · {{ summary.model }}</p>
+                <p>{{ summary.answer }}</p>
+                <div class="citation-list">
+                  @for (source of summary.sources; track source.index) {
+                    <div class="citation-item" [class.weak]="isWeakSource(source)">
+                      <button type="button" (click)="openSource(source.section_id)">[K{{ source.index }}] {{ source.source_name }} · {{ source.heading_path }} · satır {{ source.line_start }}–{{ source.line_end }}</button>
+                      <button type="button" class="text-action" [disabled]="!source.section_id || isWeakSource(source)" (click)="reportSourceMismatch(source, summary.conversation_id)">{{ isWeakSource(source) ? '✓ Kaynak eşleşmesi incelemeye gönderildi' : 'Bu kaynak alakasız' }}</button>
+                    </div>
+                  }
+                </div>
+                @if (answerFeedbackState(summary); as feedbackState) {
+                  <div class="answer-feedback recorded" [class.issue]="feedbackState === 'unhelpful'"><span>{{ feedbackState === 'helpful' ? '✓ Geri bildirim: Bu özet faydalı olarak kaydedildi.' : '⚑ Geri bildirim: Bu özet kalite incelemesine gönderildi.' }}</span><small>Kararı Kalite Merkezi’nden yönetebilirsin.</small></div>
+                } @else {
+                  <div class="answer-feedback"><span>Bu özet öğrenmene yardımcı oldu mu?</span><button type="button" class="text-action" (click)="sendAnswerFeedback(true, summary)">Evet, faydalıydı</button><button type="button" class="text-action" (click)="sendAnswerFeedback(false, summary)">Hayır, yeterli değildi</button></div>
+                }
+                <div class="summary-actions"><button type="button" class="text-action" (click)="continueSummaryInChat()">Bu özet üzerinden sohbete devam et</button><button type="button" class="text-action" [disabled]="summaryLoading()" (click)="generateTopicSummary()">Özeti yeniden oluştur</button></div>
+              </article>
+            } @else {
+              <button type="button" class="primary-action" [disabled]="summaryLoading()" (click)="generateTopicSummary()">Kaynaklı özet oluştur</button>
+            }
+          </section>
+        } @else if (studyMode() === 'practice') {
+          <section class="study-panel">
+            <p class="eyebrow">Kaynaklı mini quiz</p>
+            <h3>Konuyu sorularla pekiştir</h3>
+            <p>Yerel model, konuya dengeli dağılmış kaynak adımlarından üç soruluk bir quiz hazırlar. Yanlış cevaplar ilgili öğrenme adımına yönlendirir.</p>
+            @if (!quiz() && !quizLoading()) {
+              <button type="button" class="primary-action" (click)="startTopicQuiz()">Mini quiz başlat</button>
+            }
+            @if (quizLoading()) { <p class="study-empty">Kaynaklar okunuyor, quiz hazırlanıyor…</p> }
+            @if (quizError()) { <p class="chat-error">{{ quizError() }}</p> }
+            @if (quiz(); as currentQuiz) {
+              <div class="quiz-list">
+                @for (question of currentQuiz.questions; track question.id; let position = $index) {
+                  <article class="quiz-question" [class.answered]="quizSubmitted()" [class.correct]="quizSubmitted() && quizAnswer(question.id) === question.correct_option_id" [class.incorrect]="quizSubmitted() && quizAnswer(question.id) !== question.correct_option_id">
+                    <p class="quiz-number">Soru {{ position + 1 }}</p>
+                    <h4>{{ question.question }}</h4>
+                    <div class="quiz-options" role="radiogroup" [attr.aria-label]="'Soru ' + (position + 1)">
+                      @for (option of question.options; track option.id) {
+                        <button type="button" [attr.aria-pressed]="quizAnswer(question.id) === option.id" [class.selected]="quizAnswer(question.id) === option.id" [class.correct-option]="quizSubmitted() && option.id === question.correct_option_id" [class.wrong-option]="quizSubmitted() && quizAnswer(question.id) === option.id && option.id !== question.correct_option_id" [disabled]="quizSubmitted()" (click)="selectQuizAnswer(question.id, option.id)">
+                          <strong>{{ option.id }}</strong><span class="quiz-option-text">{{ option.text }}</span>
+                          @if (!quizSubmitted() && quizAnswer(question.id) === option.id) { <span class="quiz-choice-state selected">✓ Seçildi</span> }
+                          @if (quizSubmitted() && option.id === question.correct_option_id) { <span class="quiz-choice-state correct">✓ Doğru cevap</span> }
+                          @else if (quizSubmitted() && quizAnswer(question.id) === option.id) { <span class="quiz-choice-state wrong">Senin cevabın</span> }
+                        </button>
+                      }
+                    </div>
+                    @if (quizSubmitted()) {
+                      <div class="quiz-feedback">
+                        <strong>{{ quizAnswer(question.id) === question.correct_option_id ? 'Doğru' : 'Tekrar et' }}</strong>
+                        <p>{{ question.explanation }}</p>
+                        @if (quizRelatedStep(question.related_step_id); as sourceStep) {
+                          <div class="study-source">
+                            <span>İlgili kaynak: {{ sourceStep.source_name }} · {{ sourceStep.heading }} · satır {{ sourceStep.line_start }}–{{ sourceStep.line_end }}</span>
+                            <button type="button" class="text-action" (click)="openSource(sourceStep.section_ids[0])">Kaynakta göster</button>
+                          </div>
+                        }
+                        <div class="quiz-feedback-actions">
+                          @if (quizAnswer(question.id) !== question.correct_option_id) {
+                            <button type="button" class="primary-action" (click)="goToReviewStep(question.related_step_id)">İlgili adımı tekrar çalış</button>
+                          } @else {
+                            <button type="button" class="secondary-action" (click)="goToReviewStep(question.related_step_id)">Kaynak adımını aç</button>
+                          }
+                          <button type="button" class="secondary-action quiz-report-action" [disabled]="isQuizQuestionReported(question)" (click)="reportQuizQuestion(question)">{{ isQuizQuestionReported(question) ? '✓ Soru kalite incelemesine gönderildi' : 'Soru hatalı mı? İncelemeye gönder' }}</button>
+                        </div>
+                      </div>
+                    }
+                  </article>
+                }
+              </div>
+              @if (!quizSubmitted()) {
+                <button type="button" class="primary-action" [disabled]="!canSubmitQuiz()" (click)="submitQuiz()">Yanıtları değerlendir</button>
+              } @else {
+                <button type="button" class="secondary-action" (click)="startTopicQuiz()">Yeni quiz hazırla</button>
+              }
+            }
+          </section>
+        } @else {
+        <section class="chat-card" aria-label="Kaynaklarla sohbet">
+          <div class="chat-heading">
+            <div>
+              <p class="eyebrow">Yerel Qwen sohbeti</p>
+              <h3>{{ topic.title }} hakkında sor</h3>
+            </div>
+            <div class="chat-tools">
+              <span class="local-badge">Yerel model</span>
+              <button type="button" class="text-action" (click)="startNewConversation()">Yeni sohbet</button>
+            </div>
+          </div>
+          <label for="chat-question">Sorun</label>
+          <textarea
+            id="chat-question"
+            rows="3"
+            maxlength="4000"
+            placeholder="Örneğin: Tokenizasyon neden gereklidir?"
+            [value]="chatDraft()"
+            (input)="updateChatDraft($any($event.target).value)"></textarea>
+          <button type="button" class="primary-action" [disabled]="chatLoading() || !chatDraft().trim()" (click)="askAboutTopic()">
+            {{ chatLoading() ? 'Kaynaklar okunuyor…' : 'Kaynaklarla yanıtla' }}
+          </button>
+          @if (chatError()) {
+            <p class="chat-error">{{ chatError() }}</p>
+          }
+          @if (chatResponse(); as response) {
+            @if (conversation(); as currentConversation) {
+              <div class="conversation-history" aria-label="Kaydedilmiş sohbet geçmişi">
+                @for (message of currentConversation.messages; track message.id) {
+                  <article class="chat-message" [class.assistant]="message.role === 'assistant'">
+                    <p class="model-label">{{ message.role === 'user' ? 'Sen' : message.model }}</p>
+                    <p>{{ message.content }}</p>
+                    @if (message.sources.length) {
+                      <div class="citation-list">
+                        @for (source of message.sources; track source.index) {
+                          <div class="citation-item" [class.weak]="isWeakSource(source)">
+                            <button type="button" (click)="openSource(source.section_id)">[K{{ source.index }}] {{ source.source_name }} · {{ source.heading_path }} · satır {{ source.line_start }}–{{ source.line_end }}</button>
+                            <button type="button" class="text-action" [disabled]="!source.section_id || isWeakSource(source)" (click)="reportSourceMismatch(source, currentConversation.id)">{{ isWeakSource(source) ? '✓ Kaynak eşleşmesi incelemeye gönderildi' : 'Bu kaynak alakasız' }}</button>
+                          </div>
+                        }
+                      </div>
+                    }
+                  </article>
+                }
+              </div>
+            } @else {
+              <article class="chat-answer">
+                <p class="model-label">{{ response.model }}</p>
+                <p>{{ response.answer }}</p>
+                <div class="citation-list">
+                  @for (source of response.sources; track source.index) {
+                    <div class="citation-item" [class.weak]="isWeakSource(source)">
+                      <button type="button" (click)="openSource(source.section_id)">[K{{ source.index }}] {{ source.source_name }} · {{ source.heading_path }} · satır {{ source.line_start }}–{{ source.line_end }}</button>
+                      <button type="button" class="text-action" [disabled]="!source.section_id || isWeakSource(source)" (click)="reportSourceMismatch(source, response.conversation_id)">{{ isWeakSource(source) ? '✓ Kaynak eşleşmesi incelemeye gönderildi' : 'Bu kaynak alakasız' }}</button>
+                    </div>
+                  }
+                </div>
+                @if (answerFeedbackState(response); as feedbackState) {
+                  <div class="answer-feedback recorded" [class.issue]="feedbackState === 'unhelpful'"><span>{{ feedbackState === 'helpful' ? '✓ Geri bildirim: Bu yanıt faydalı olarak kaydedildi.' : '⚑ Geri bildirim: Bu yanıt kalite incelemesine gönderildi.' }}</span><small>Kararı Kalite Merkezi’nden yönetebilirsin.</small></div>
+                } @else {
+                  <div class="answer-feedback"><span>Bu yanıt öğrenmene yardımcı oldu mu?</span><button type="button" class="text-action" (click)="sendAnswerFeedback(true, response)">Evet, faydalıydı</button><button type="button" class="text-action" (click)="sendAnswerFeedback(false, response)">Hayır, yeterli değildi</button></div>
+                }
+              </article>
+            }
+          }
+        </section>
+        }
+      } @else {
+        <p class="empty-state">Başlamak için bir konu seçin.</p>
+      }
+    </section>
+  </section>
+  }
+
+  @if (currentPage() === 'sources') {
+  <section class="documents" id="documents">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Sürüm yönetimi</p>
+        <h2>Aktif dokümanlar</h2>
+      </div>
+      <span class="local-badge">Önce taslak, sonra onay</span>
+    </div>
+    <form class="upload-form" (submit)="$event.preventDefault(); uploadDocument()">
+      <label for="source-file">Ders dokümanları (.txt, .md, .py, .pdf, .docx, .pptx, .xlsx)</label>
+      <input id="source-file" type="file" accept=".txt,.md,.py,.pdf,.docx,.pptx,.xlsx" multiple [disabled]="uploadLoading()" (change)="chooseUploadFiles($any($event.target).files ?? null, $any($event.target))">
+      <button type="submit" class="secondary-action" [disabled]="!uploadQueue().length || uploadLoading()">
+        {{ uploadLoading() ? 'Sıradaki doküman analiz ediliyor…' : 'Kuyruğu başlat' }}
+      </button>
+      @if (uploadQueue().length && !uploadLoading()) {
+        <button type="button" class="text-action" (click)="clearUploadQueue()">Listeyi temizle</button>
+      }
+      @if (uploadError()) { <p class="chat-error">{{ uploadError() }}</p> }
+      @if (uploadSuccess()) { <p class="upload-success">{{ uploadSuccess() }}</p> }
+    </form>
+    @if (uploadQueue().length) {
+      <section class="upload-queue" aria-label="Doküman analiz kuyruğu" aria-live="polite">
+        <div class="upload-queue-heading">
+          <div>
+            <p class="eyebrow">Sıralı analiz kuyruğu</p>
+            <h3>{{ uploadQueue().length }} doküman seçildi</h3>
+          </div>
+          <span class="local-badge">Tek seferde bir model işi</span>
+        </div>
+        <div class="upload-queue-list">
+          @for (item of uploadQueue(); track item.id; let position = $index) {
+            <article class="upload-queue-item" [class.analyzing]="item.status === 'analyzing'" [class.failed]="item.status === 'failed'">
+              <span class="queue-position">{{ position + 1 }}</span>
+              <div class="queue-main">
+                <div><strong>{{ item.file.name }}</strong><span>{{ uploadQueueStatusLabel(item.status) }}</span></div>
+                <p>{{ item.message }}</p>
+                <div class="queue-progress" aria-hidden="true"><span [style.width.%]="item.progress"></span></div>
+              </div>
+              <div class="queue-actions">
+                <strong class="queue-percent">{{ item.progress }}%</strong>
+                @if (item.status === 'queued') {
+                  <button type="button" class="text-action" (click)="removeQueuedUpload(item.id)">Sıradan çıkar</button>
+                }
+              </div>
+            </article>
+          }
+        </div>
+      </section>
+    }
+    @if (documents().length) {
+      <div class="document-bulk-toolbar">
+        <label>
+          <input type="checkbox" [checked]="allDocumentsSelected()" (change)="toggleAllDocuments($any($event.target).checked)">
+          Tümünü seç
+        </label>
+        <span>{{ selectedDocumentIds().length }} seçili</span>
+        <button type="button" class="delete-document" [disabled]="!selectedDocumentIds().length" (click)="requestSelectedDocumentsDeletion()">Seçilileri kaldır</button>
+      </div>
+    }
+    @if (conversionReview(); as conversion) {
+      <section id="conversion-review" class="analysis-card conversion-review" aria-label="Markdown yayın incelemesi">
+        <div class="chat-heading">
+          <div>
+            <p class="eyebrow">Dönüştürülmüş Markdown</p>
+            <h3>{{ documentTitle(conversion.document) }}</h3>
+          </div>
+          <span class="local-badge">{{ conversion.converter ?? 'Dönüştürücü' }}</span>
+        </div>
+        <section class="review-workflow" aria-live="polite">
+          <div class="review-workflow-heading"><span>Dönüşüm durumu</span><strong>%{{ conversion.progress }}</strong></div>
+          <div class="progress-track" aria-hidden="true"><span [style.width.%]="conversion.progress"></span></div>
+          <p>{{ conversion.message }}</p>
+        </section>
+        <p class="analysis-intro">
+          {{ conversion.page_count ?? '—' }} sayfa · {{ conversion.table_count }} tablo · {{ conversion.image_count }} görsel
+          @if (conversion.ocr_used) { · OCR kullanıldı }
+        </p>
+        @if (conversion.assets.length) {
+          <section class="conversion-assets" aria-label="Dönüşümden alınan tablo ve görseller">
+            <h4>Korunan görseller</h4>
+            <p class="asset-intro">Yalnızca seçtiğiniz tablo veya diyagram yerel görsel model ile açıklanır. Açıklama Markdown’a eklenir ve yayınlamadan önce burada görünür.</p>
+            <button type="button" class="text-action" [disabled]="visualAnalysisLoading() || markdownEditing() || hasVisualAnalysisInProgress(conversion)" (click)="analyzeAllConversionAssets()">Tüm görselleri sırayla açıkla</button>
+            <button type="button" class="text-action" [disabled]="!selectedAssetIds().length || visualAnalysisLoading() || markdownEditing() || hasVisualAnalysisInProgress(conversion)" (click)="analyzeSelectedConversionAssets()">Seçilenleri açıkla ({{ selectedAssetIds().length }})</button>
+            <button type="button" class="text-action" [disabled]="hasVisualAnalysisInProgress(conversion)" (click)="acceptAllConversionAssets()">Hazır açıklamaların tümünü kabul et</button>
+            <p class="asset-intro">{{ visualProgress(conversion) }}</p>
+            <div>
+              @for (asset of conversion.assets; track asset.id) {
+                <figure>
+                  <img [src]="documentAssetUrl(asset)" [alt]="(asset.page_number ? asset.page_number + '. sayfa ' : '') + asset.kind">
+                  <figcaption>
+                    <label><input type="checkbox" [checked]="isConversionAssetSelected(asset.id)" (change)="toggleConversionAsset(asset.id, $any($event.target).checked)"> Seç</label>
+                    <strong>{{ asset.page_number ? asset.page_number + '. sayfa · ' : '' }}{{ asset.kind === 'table' ? 'Tablo' : 'Görsel' }}</strong>
+                    @if (asset.analysis_status === 'pending' || asset.analysis_status === 'failed') {
+                      <button type="button" class="text-action asset-analysis-action" [disabled]="visualAnalysisLoading() || markdownEditing()" (click)="analyzeConversionAsset(asset)">
+                        {{ asset.analysis_status === 'failed' ? 'Tekrar açıkla' : 'Görsel model ile açıkla' }}
+                      </button>
+                    } @else if (asset.analysis_status === 'processing') {
+                      <span class="asset-status">Görsel model açıklıyor…</span>
+                    } @else if (asset.analysis_status === 'ready') {
+                      <span class="asset-status ready">Açıklama hazır · {{ asset.confidence }}%</span>
+                    }
+                    @if (asset.description) { <p>{{ asset.description }}</p> }
+                    @if (asset.analysis_status === 'ready') {
+                      <div class="asset-decision"><button type="button" class="text-action" (click)="decideConversionAsset(asset, 'accepted')">{{ asset.inclusion_status === 'accepted' ? 'Markdown’da kabul edildi' : 'Markdown’a kabul et' }}</button><button type="button" class="text-action" (click)="decideConversionAsset(asset, 'rejected')">{{ asset.inclusion_status === 'rejected' ? 'Çıkarıldı' : 'Çıkar' }}</button></div>
+                    }
+                    @if (asset.structured_markdown) { <details class="asset-table-structure"><summary>{{ asset.row_count ?? '—' }} satır · {{ asset.column_count ?? '—' }} sütun</summary><pre>{{ asset.structured_markdown }}</pre></details> }
+                    @if (asset.needs_review) { <em>Belirsizlik var; görselden doğrulayın.</em> }
+                    @if (asset.error_message) { <em class="asset-error">{{ asset.error_message }}</em> }
+                  </figcaption>
+                </figure>
+              }
+            </div>
+          </section>
+        }
+        <section class="markdown-review" aria-label="Markdown inceleme ve sürüm geçmişi">
+          <div class="markdown-review-heading">
+            <div>
+              <h4>Markdown incelemesi</h4>
+              <p>Sürüm {{ conversion.current_revision_number || 1 }} · Kaydettiğiniz her düzenleme geri yüklenebilir.</p>
+            </div>
+            @if (!markdownEditing()) {
+              <button type="button" class="text-action" [disabled]="hasVisualAnalysisInProgress(conversion)" (click)="startMarkdownEditing()">Markdown’ı düzenle</button>
+            }
+          </div>
+          @if (markdownEditing()) {
+            <textarea class="markdown-editor" rows="18" [value]="markdownDraft()" (input)="updateMarkdownDraft($any($event.target).value)" aria-label="Düzenlenmiş Markdown"></textarea>
+            <div class="markdown-editor-actions">
+              <button type="button" class="primary-action compact-action" [disabled]="markdownSaving() || !markdownDraft().trim()" (click)="saveMarkdownEditing()">{{ markdownSaving() ? 'Kaydediliyor…' : 'Yeni sürüm olarak kaydet' }}</button>
+              <button type="button" class="secondary-action compact-action" [disabled]="markdownSaving()" (click)="cancelMarkdownEditing()">Vazgeç</button>
+            </div>
+          } @else {
+            <pre class="markdown-preview">{{ conversion.markdown }}</pre>
+          }
+          @if (conversion.revisions.length > 1) {
+            <details class="markdown-history">
+              <summary>Sürüm geçmişi ({{ conversion.revisions.length }})</summary>
+              <div>
+                @for (revision of conversion.revisions; track revision.id) {
+                  <article>
+                    <span><strong>Sürüm {{ revision.revision_number }}</strong> · {{ revision.reason === 'conversion' ? 'İlk dönüşüm' : revision.reason === 'user_edit' ? 'Kullanıcı düzenlemesi' : revision.reason === 'visual_appendix' ? 'Görsel açıklaması' : 'Geri yükleme' }}</span>
+                    @if (revision.revision_number !== conversion.current_revision_number) {
+                      <button type="button" class="text-action" [disabled]="markdownRestoring() !== null || markdownEditing()" (click)="restoreMarkdownRevision(revision.revision_number)">{{ markdownRestoring() === revision.revision_number ? 'Geri yükleniyor…' : 'Bu sürümü geri yükle' }}</button>
+                    }
+                  </article>
+                }
+              </div>
+            </details>
+          }
+        </section>
+        <p class="analysis-intro">Bu onay Markdown’ın mevcut konu analizi akışına girmesine izin verir; henüz Qdrant’a indekslenmez.</p>
+        @if (hasVisualAnalysisInProgress(conversion)) {
+          <p class="analysis-intro">Seçilen görsel için açıklama hazırlanıyor; yayınlama tamamlanana kadar beklenir.</p>
+        }
+        <button type="button" class="primary-action" [disabled]="approvalLoading() || markdownEditing() || hasVisualAnalysisInProgress(conversion)" (click)="publishConversion()">
+          {{ approvalLoading() ? 'Konu analizi başlatılıyor…' : 'Markdown’ı onayla ve öğrenme haritasına dönüştür' }}
+        </button>
+      </section>
+    }
+    @if (documentAnalysis(); as analysis) {
+      <section id="analysis-review" class="analysis-card" aria-label="Konu onay taslağı">
+        <div class="chat-heading">
+          <div>
+            <p class="eyebrow">{{ analysis.status === 'ready' ? 'Konu taslağı' : analysis.status === 'approved' ? 'Kaynak hazır' : 'Doküman işleniyor' }}</p>
+            <h3>{{ documentTitle(analysis.document) }}</h3>
+          </div>
+          <div class="analysis-card-tools">
+            <span class="local-badge">{{ analysis.model }}</span>
+            @if (analysis.status === 'approved') {
+              <button type="button" class="close-analysis-card" aria-label="Kaynak hazır kartını kapat" (click)="closeAnalysisCard()">×</button>
+            }
+          </div>
+        </div>
+        <section class="review-workflow" aria-label="Doküman işleme durumu" aria-live="polite">
+          <div class="review-workflow-heading">
+            <span>İşleme durumu</span>
+            <strong>%{{ workflowProgress(analysis) }}</strong>
+          </div>
+          <div class="review-steps">
+            <span [class.complete]="workflowStepState(analysis, 1) === 'complete'" [class.active]="workflowStepState(analysis, 1) === 'active'">1. Konu analizi</span>
+            <span [class.complete]="workflowStepState(analysis, 2) === 'complete'" [class.active]="workflowStepState(analysis, 2) === 'active'">2. İnceleme ve onay</span>
+            <span [class.complete]="workflowStepState(analysis, 3) === 'complete'" [class.active]="workflowStepState(analysis, 3) === 'active'">3. Qdrant indeksleme</span>
+          </div>
+          <div class="progress-track" aria-hidden="true"><span [style.width.%]="workflowProgress(analysis)"></span></div>
+          <p>{{ workflowStatusText(analysis) }}</p>
+        </section>
+        @if (analysis.status === 'ready') {
+        <p class="analysis-intro">Onaylanan konular oluşturulur veya mevcut konuyla birleştirilir. Örnekler ayrı tür olarak korunur.</p>
+        <label class="lesson-title-field" for="lesson-title">
+          <span>Ders adı önerisi</span>
+          <input id="lesson-title" maxlength="255" [value]="lessonTitleDraft()" (input)="updateLessonTitleDraft($any($event.target).value)">
+          @if (analysis.suggested_lesson_title) {
+            <small>Yerel modelin önerisi. Düzenleyebilir veya olduğu gibi onaylayabilirsiniz.</small>
+          } @else {
+            <small>Yerel model başlık öneremedi; dosya adından türetilen adı düzenleyebilirsiniz.</small>
+          }
+        </label>
+        <button type="button" class="text-action reanalyze-action" [disabled]="reanalyzeLoading() || approvalLoading()" (click)="reanalyzeDocument()">
+          {{ reanalyzeLoading() ? 'Konu merkezli analiz başlatılıyor…' : 'Konu merkezli yeniden analiz et' }}
+        </button>
+        <div class="proposal-list">
+          @for (proposal of analysis.topics; track proposal.id) {
+            <label class="proposal-item">
+              <input type="checkbox" [checked]="isProposalApproved(proposal.id)" (change)="toggleProposal(proposal.id, $any($event.target).checked)">
+              <span>
+                <input class="proposal-title" [value]="proposalDraft(proposal.id).title" aria-label="Konu adı" (input)="updateProposalDraft(proposal.id, 'title', $any($event.target).value)">
+                <textarea class="proposal-description" rows="2" [value]="proposalDraft(proposal.id).description" aria-label="Konu açıklaması" (input)="updateProposalDraft(proposal.id, 'description', $any($event.target).value)"></textarea>
+                <em>{{ proposal.section_count }} bölüm · {{ proposal.example_count }} örnek · {{ proposal.code_count }} kod · {{ proposal.exercise_count }} alıştırma</em>
+              </span>
+            </label>
+          }
+        </div>
+        <button type="button" class="primary-action" [disabled]="!approvedProposalIds().length || approvalLoading() || lessonMergeChecking()" (click)="approveAnalysis()">
+          {{ approvalLoading() ? 'İndeksleme başlatılıyor…' : lessonMergeChecking() ? 'Ders eşleşmesi kontrol ediliyor…' : 'İncelemeyi onayla ve indekslemeye devam et' }}
+        </button>
+        } @else if (analysis.status === 'processing') {
+          <p class="analysis-intro">Bu pencereyi açık tutmanız gerekmez; indeksleme arka planda devam eder.</p>
+        } @else if (analysis.status === 'approved') {
+          <p class="analysis-intro">Kaynak indekslendi. Öğrenme haritasından konuları açabilir veya kaynaklı sohbete geçebilirsiniz.</p>
+        }
+      </section>
+    }
+    @if (lessonMergePreview(); as mergePreview) {
+      <section class="merge-dialog" role="dialog" aria-modal="true" aria-labelledby="merge-lesson-title">
+        <div class="merge-dialog-card">
+          <p class="eyebrow">Birleştirme onayı</p>
+          <h2 id="merge-lesson-title">“{{ mergePreview.lesson_title }}” dersine eklensin mi?</h2>
+          <p>Aynı ders adıyla {{ mergePreview.matching_documents.length }} indekslenmiş kaynak bulundu. Bu kaynaklar tek ders altında kalacak; yalnızca aynı veya çok yakın konu başlıkları ortak konuya bağlanacak.</p>
+          <ul>
+            @for (document of mergePreview.matching_documents; track document.id) {
+              <li>{{ document.source_name }} · Sürüm {{ document.version }}</li>
+            }
+          </ul>
+          @if (mergePreview.overlapping_topics.length) {
+            <p><strong>Birleşmesi önerilen konular:</strong> {{ mergePreview.overlapping_topics.join(', ') }}</p>
+          } @else {
+            <p>Doğrudan konu çakışması yok; kaynak yine bu ders koleksiyonuna eklenecek.</p>
+          }
+          <div class="dialog-actions">
+            <button type="button" class="secondary-action" (click)="cancelLessonMerge()">Ders adını düzenle</button>
+            <button type="button" class="primary-action" [disabled]="approvalLoading()" (click)="approveAnalysis(true)">Bu derse ekle ve devam et</button>
+          </div>
+        </div>
+      </section>
+    }
+    @if (documents().length) {
+      <ul class="document-list">
+        @for (document of documents(); track document.id) {
+          <li>
+            <div class="document-row">
+              <input
+                type="checkbox"
+                class="document-select"
+                [checked]="isDocumentSelected(document.id)"
+                [attr.aria-label]="documentTitle(document) + ' seç'"
+                (change)="toggleDocumentSelection(document.id, $any($event.target).checked)">
+              <button
+                type="button"
+                class="document-toggle"
+                [attr.aria-expanded]="isDocumentExpanded(document.id)"
+                (click)="toggleDocumentDetails(document)">
+                <span class="document-main">
+                  <strong>{{ documentTitle(document) }}</strong>
+                  @if (document.lesson_title) { <small class="source-filename">{{ document.source_name }}</small> }
+                  <span>Sürüm {{ document.version }} · {{ documentWorkflowLabel(document) }}</span>
+                </span>
+                <span class="document-state" [class.ready]="documentWorkflowState(document) === 'ready'" [class.active]="documentWorkflowState(document) === 'active'" [class.failed]="documentWorkflowState(document) === 'failed'">
+                  {{ documentWorkflowLabel(document) }}
+                </span>
+                <span class="document-chevron" aria-hidden="true">{{ isDocumentExpanded(document.id) ? '⌃' : '⌄' }}</span>
+              </button>
+              <button type="button" class="delete-document" (click)="requestDocumentDeletion(document)">Kaldır</button>
+            </div>
+            @if (isDocumentExpanded(document.id)) {
+              <section class="document-accordion" [attr.aria-label]="documentTitle(document) + ' konu başlıkları'">
+                @if (documentDetailLoading() === document.id) {
+                  <p>Dokümanın konu başlıkları yükleniyor…</p>
+                } @else if (documentConversion(document.id); as conversion) {
+                  <div class="accordion-summary">
+                    <span>{{ conversion.progress }}% · {{ conversion.stage === 'review' ? 'Markdown incelemesi' : conversion.stage }}</span>
+                    <small>{{ conversion.error_message ?? conversion.message }}</small>
+                  </div>
+                  @if (conversion.status === 'ready') {
+                    <button type="button" class="primary-action review-action" (click)="openConversionForReview(conversion)">Markdown’ı incele ve yayınla</button>
+                  } @else if (conversion.status === 'published') {
+                    <p>Markdown yayınlandı; konu önerileri bu dokümanın işleme kartında hazırlanıyor.</p>
+                  } @else if (conversion.status === 'failed') {
+                    <p>Bu dosya dönüştürülemedi. Kaynağı kontrol edip yeniden yükleyebilirsiniz.</p>
+                  }
+                } @else if (documentDetail(document.id); as analysis) {
+                  <div class="accordion-summary">
+                    <span>{{ analysis.progress }}% · {{ analysisStageLabel(analysis.stage) }}</span>
+                    <small>{{ analysis.message }}</small>
+                  </div>
+                  @if (analysis.status === 'ready') {
+                    <button type="button" class="primary-action review-action" (click)="openAnalysisForReview(analysis)">
+                      İncele ve onayla
+                    </button>
+                    <button type="button" class="text-action reanalyze-action" [disabled]="reanalyzeLoading()" (click)="reanalyzeDocument(document.id)">
+                      {{ reanalyzeLoading() ? 'Konu merkezli analiz başlatılıyor…' : 'Konu merkezli yeniden analiz et' }}
+                    </button>
+                  }
+                  @if (documentAnalysis()?.document?.id === document.id && documentAnalysis()?.status === 'ready') {
+                    <p class="review-open-note">İnceleme ve işleme durumu üstteki tek kartta gösteriliyor.</p>
+                  } @else if (analysis.topics.length) {
+                    <div class="accordion-topics">
+                      @for (proposal of analysis.topics; track proposal.id) {
+                        <article>
+                          <h3>{{ proposal.title }}</h3>
+                          @if (proposal.description) { <p>{{ proposal.description }}</p> }
+                          <small>{{ proposal.section_count }} bölüm · {{ proposal.example_count }} örnek · {{ proposal.code_count }} kod</small>
+                        </article>
+                      }
+                    </div>
+                  } @else {
+                    <p>Bu doküman için konu önerileri henüz oluşmadı.</p>
+                  }
+                } @else {
+                  <p>Bu eski kaynak için inceleme taslağı bulunmuyor.</p>
+                }
+              </section>
+            }
+          </li>
+        }
+      </ul>
+    } @else {
+      <p class="empty-state">Henüz aktif doküman yok. İlk ders notunu ekleyerek başlayın.</p>
+    }
+  </section>
+  }
+
+  @if (currentPage() === 'settings') {
+  <section class="page-heading">
+    <p class="eyebrow">Çalışma zamanı yapılandırması</p>
+    <h1>Yerel modelleri güvenle yönet.</h1>
+    <p class="intro">Ayarlar bu makinedeki tüm kullanıcılar için geçerlidir. Kaydetmeden önce bağlantı ve model listesi doğrulanır; başarısız deneme mevcut çalışan ayarı değiştirmez.</p>
+  </section>
+  @if (runtimeModelLoading()) {
+    <section class="settings-panel"><p class="study-empty">Sağlayıcılar ve yüklü modeller denetleniyor…</p></section>
+  } @else if (runtimeModelDraft(); as modelSettings) {
+    <section class="settings-panel" aria-label="Model ve sağlayıcı ayarları">
+      <div class="settings-heading">
+        <div><h2>Metin üretimi</h2><p>Sohbet, konu analizi, quiz ve kalite görevleri bu modeli kullanır.</p></div>
+        <button type="button" class="text-action" [disabled]="runtimeModelLoading()" (click)="reloadRuntimeModelSettings()">Modelleri yenile</button>
+      </div>
+      @if (runtimeModelError()) { <p class="chat-error">{{ runtimeModelError() }}</p> }
+      @if (runtimeModelTestMessage()) { <p class="upload-success">{{ runtimeModelTestMessage() }}</p> }
+      <div class="settings-grid">
+        <label><span>Metin sağlayıcısı</span><select [value]="modelSettings.text_provider" (change)="updateRuntimeModelDraft('text_provider', $any($event.target).value)"><option value="ollama">Ollama</option><option value="vllm">vLLM</option></select></label>
+        <label><span>Bağlam penceresi</span><input type="number" min="4096" max="131072" step="1024" [value]="modelSettings.context_length" (input)="updateRuntimeModelDraft('context_length', $any($event.target).value)"></label>
+      </div>
+      <div class="provider-settings" [class.inactive]="modelSettings.text_provider !== 'ollama'">
+        <div class="provider-settings-heading"><strong>Ollama</strong>@if (providerDiscovery('ollama'); as provider) { <small [class.unavailable]="!provider.reachable">{{ provider.reachable ? provider.models.length + ' yerel model bulundu' : provider.error }}</small> }</div>
+        <label><span>Sunucu adresi</span><input [value]="modelSettings.ollama_base_url" placeholder="http://127.0.0.1:11434" (input)="updateRuntimeModelDraft('ollama_base_url', $any($event.target).value)"></label>
+        <label><span>Metin modeli</span><select [value]="modelSettings.ollama_model" (change)="updateRuntimeModelDraft('ollama_model', $any($event.target).value)"><option [value]="modelSettings.ollama_model">{{ modelSettings.ollama_model }}</option>@for (model of providerModels('ollama'); track model.id) { @if (model.id !== modelSettings.ollama_model) { <option [value]="model.id">{{ model.label }}@if (model.parameter_size) { · {{ model.parameter_size }} }@if (model.quantization) { · {{ model.quantization }} }</option> } }</select></label>
+      </div>
+      <div class="provider-settings" [class.inactive]="modelSettings.text_provider !== 'vllm'">
+        <div class="provider-settings-heading"><strong>vLLM</strong>@if (providerDiscovery('vllm'); as provider) { <small [class.unavailable]="!provider.reachable">{{ provider.reachable ? provider.models.length + ' servis edilen model bulundu' : provider.error }}</small> }</div>
+        <label><span>Sunucu adresi</span><input [value]="modelSettings.vllm_base_url" placeholder="http://127.0.0.1:8001" (input)="updateRuntimeModelDraft('vllm_base_url', $any($event.target).value)"></label>
+        <label><span>Metin modeli</span><select [value]="modelSettings.vllm_model ?? ''" (change)="updateRuntimeModelDraft('vllm_model', $any($event.target).value)"><option value="">vLLM modeli seçin</option>@for (model of providerModels('vllm'); track model.id) { <option [value]="model.id">{{ model.label }}</option> }</select></label>
+        <p class="settings-note">vLLM yalnızca çalışan sunucunun servis ettiği modelleri gösterir; yerel model klasörünün tamamını taramaz.</p>
+      </div>
+      <section class="settings-subsection">
+        <h3>Görsel ve tablo açıklama modeli</h3>
+        <p>Görsel açıklama isteğe bağlıdır. Kaydetmeden önce sistem, sabit küçük bir PNG ile modelin görsel istek biçimini gerçekten kabul ettiğini doğrular.</p>
+        <div class="settings-grid">
+          <label><span>Görsel sağlayıcısı</span><select [value]="modelSettings.vision_provider" (change)="updateRuntimeModelDraft('vision_provider', $any($event.target).value)"><option value="ollama">Ollama</option><option value="vllm">vLLM</option></select></label>
+          <label><span>Görsel modeli</span><select [value]="modelSettings.vision_model" (change)="updateRuntimeModelDraft('vision_model', $any($event.target).value)"><option [value]="modelSettings.vision_model">{{ modelSettings.vision_model }}</option>@for (model of providerModels(modelSettings.vision_provider); track model.id) { @if (model.id !== modelSettings.vision_model) { <option [value]="model.id">{{ model.label }}</option> } }</select></label>
+        </div>
+      </section>
+      <section class="embedding-readonly"><strong>Embedding ve indeks</strong><span>{{ modelSettings.embedding_model }} · {{ modelSettings.embedding_device }}</span><small>Embedding modeli bu ekrandan değiştirilmez. Değişim yeni Qdrant koleksiyonu ve kaynakların tamamen yeniden indekslenmesini gerektirir.</small></section>
+      <div class="settings-actions"><button type="button" class="secondary-action" [disabled]="runtimeModelTesting() || runtimeModelSaving()" (click)="testRuntimeModelSettings()">{{ runtimeModelTesting() ? 'Bağlantı deneniyor…' : 'Bağlantıyı ve modeli dene' }}</button><button type="button" class="primary-action" [disabled]="runtimeModelSaving() || runtimeModelTesting()" (click)="saveRuntimeModelSettings()">{{ runtimeModelSaving() ? 'Doğrulanıp kaydediliyor…' : 'Doğrula ve uygula' }}</button></div>
+    </section>
+  }
+  }
+
+  @if (currentPage() === 'quality') {
+  <section class="page-heading">
+    <p class="eyebrow">İnsan onaylı kalite döngüsü</p>
+    <h1>Geri bildirimleri ölçülebilir kaliteye dönüştür.</h1>
+    <p class="intro">İşaretlenen yanıt ve kaynak sorunlarını inceleyin. Yalnızca onaylanan kayıtlar kalite test seti adayı olarak dışa aktarılır.</p>
+  </section>
+  <section class="quality-layout">
+    @if (qualityOverview(); as overview) {
+      <div class="quality-summary" aria-label="Kalite geri bildirim özeti">
+        <article><span>İncelenecek</span><strong>{{ overview.new_count }}</strong><small>yeni kayıt</small></article>
+        <article><span>Onaylandı</span><strong>{{ overview.reviewed_count }}</strong><small>kalite adayı</small></article>
+        <article><span>Göz ardı</span><strong>{{ overview.ignored_count }}</strong><small>uygunsuz kayıt</small></article>
+      </div>
+    }
+    @if (qualityInsights(); as insights) {
+      <section class="quality-insights">
+        <div><h3>Kalite sinyalleri</h3><p>{{ insights.reviewed_candidate_count }} onaylı kayıt değerlendirme adayı.</p></div>
+        <button type="button" class="secondary-action" [disabled]="qualityExporting()" (click)="exportReviewedFeedback()">{{ qualityExporting() ? 'Hazırlanıyor…' : 'Onaylı adayları dışa aktar' }}</button>
+        <div class="quality-metric-grid">
+          <article><strong>Konu bazlı sorunlar</strong>@for (item of insights.topic_issues; track item.key) { <span>{{ item.label }} <em>{{ item.count }}</em></span> } @if (!insights.topic_issues.length) { <small>Henüz işaret yok.</small> }</article>
+          <article><strong>Kaynak bazlı sorunlar</strong>@for (item of insights.source_issues; track item.key) { <span>{{ item.label }} <em>{{ item.count }}</em></span> } @if (!insights.source_issues.length) { <small>Henüz işaret yok.</small> }</article>
+        </div>
+      </section>
+    }
+    <section class="quality-panel">
+      <div class="quality-toolbar">
+        <div class="study-tabs" role="tablist" aria-label="Kalite geri bildirim filtresi">
+          <button type="button" [class.active]="qualityFilter() === 'new'" (click)="setQualityFilter('new')">Yeni</button>
+          <button type="button" [class.active]="qualityFilter() === 'reviewed'" (click)="setQualityFilter('reviewed')">Onaylanan</button>
+          <button type="button" [class.active]="qualityFilter() === 'ignored'" (click)="setQualityFilter('ignored')">Göz ardı</button>
+          <button type="button" [class.active]="qualityFilter() === 'all'" (click)="setQualityFilter('all')">Tümü</button>
+        </div>
+        <small>Yerel SQLite · insan incelemesi gerekli</small>
+      </div>
+      @if (qualityError()) { <p class="chat-error">{{ qualityError() }}</p> }
+      @if (qualityLoading()) {
+        <p class="study-empty">Kalite kayıtları yükleniyor…</p>
+      } @else if (!qualityFeedback().length) {
+        <p class="empty-state">Bu filtrede incelenecek geri bildirim yok.</p>
+      } @else {
+        <div class="quality-feedback-list">
+          @for (feedback of qualityFeedback(); track feedback.id) {
+            <article class="quality-feedback-card" [class.reviewed]="feedback.review_status === 'reviewed'" [class.ignored]="feedback.review_status === 'ignored'">
+              <div class="quality-feedback-heading">
+                <div>
+                  <p class="eyebrow">{{ qualityKindLabel(feedback.kind) }}</p>
+                  <h2>{{ feedback.topic_title || 'Genel geri bildirim' }}</h2>
+                </div>
+                <small>{{ qualityDate(feedback.created_at) }}</small>
+              </div>
+              @if (feedback.source_section_id) {
+                <button type="button" class="source-link" (click)="openSource(feedback.source_section_id)">
+                  {{ feedback.source_name || 'Kaynak bölümü' }} @if (feedback.heading_path) { · {{ feedback.heading_path }} }
+                </button>
+              }
+              @if (feedback.payload; as payload) {
+                <pre class="quality-payload">{{ payload | json }}</pre>
+              }
+              <label class="quality-note">
+                <span>İnceleme notu</span>
+                <textarea rows="2" maxlength="1000" [value]="qualityReviewNotes()[feedback.id]" (input)="updateQualityReviewNote(feedback.id, $any($event.target).value)" placeholder="Neden onayladığınızı veya göz ardı ettiğinizi yazın."></textarea>
+              </label>
+              <div class="dialog-actions">
+                @if (feedback.review_status !== 'reviewed') { <button type="button" class="primary-action" [disabled]="qualityLoading()" (click)="reviewQualityFeedback(feedback, 'reviewed')">{{ qualityApprovalLabel(feedback) }}</button> }
+                @if (feedback.review_status !== 'ignored') { <button type="button" class="secondary-action" [disabled]="qualityLoading()" (click)="reviewQualityFeedback(feedback, 'ignored')">{{ qualityIgnoreLabel(feedback) }}</button> }
+                @if (feedback.review_status !== 'new') { <button type="button" class="text-action" [disabled]="qualityLoading()" (click)="reviewQualityFeedback(feedback, 'new')">Kararı değiştir — yeniden incelemeye al</button> }
+              </div>
+            </article>
+          }
+        </div>
+      }
+    </section>
+  </section>
+  }
+
+  @if (documentsToDelete().length) {
+    <div class="delete-backdrop" role="presentation">
+      <section class="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-document-title">
+        <p class="eyebrow">Kalıcı kaldırma</p>
+        @if (documentsToDelete().length === 1) {
+          <h2 id="delete-document-title">{{ documentTitle(documentsToDelete()[0]) }} kaldırılsın mı?</h2>
+        } @else {
+          <h2 id="delete-document-title">{{ documentsToDelete().length }} doküman kaldırılsın mı?</h2>
+        }
+        <p>Kaynak dosyalar, bölüm eşleştirmeleri ve varsa Qdrant vektörleri silinir. Bu işlem geri alınamaz.</p>
+        @if (deletionImpactLoading()) {
+          <p class="deletion-impact loading">Etkilenen öğrenme verisi hesaplanıyor…</p>
+        } @else if (deletionImpactError()) {
+          <p class="deletion-impact error">{{ deletionImpactError() }} Silme işlemi güvenlik nedeniyle kapatıldı.</p>
+        } @else if (deletionImpact(); as impact) {
+          <div class="deletion-impact">
+            @if (impact.affected_topics.length) {
+              <p><strong>Etkilenen konular:</strong> {{ impact.affected_topics.length }} — {{ deletionImpactTopicTitles(impact) }}</p>
+            } @else {
+              <p>Bu kaynak henüz onaylanmış bir konuya bağlanmamış.</p>
+            }
+            <p>
+              {{ impact.learner_progress_count }} ilerleme kaydı,
+              {{ impact.prerequisite_relation_count }} ön koşul bağı,
+              {{ impact.conversation_count }} sohbet ve
+              {{ impact.feedback_count }} geri bildirim bu konularla ilişkili kalabilir.
+            </p>
+            <small>Kaynağı olmayan konular haritadan kaldırılır; geçmiş kayıtlar kalite ve ilerleme geçmişi için saklanır.</small>
+          </div>
+        }
+        <div class="dialog-actions">
+          <button type="button" class="secondary-action" [disabled]="!!deletingDocumentId()" (click)="cancelDocumentDeletion()">Vazgeç</button>
+          <button type="button" class="delete-document confirm-delete" [disabled]="!!deletingDocumentId() || deletionImpactLoading() || !!deletionImpactError()" (click)="deleteDocuments()">
+            {{ deletingDocumentId() ? 'Kaldırılıyor…' : 'Evet, kaldır' }}
+          </button>
+        </div>
+      </section>
+    </div>
+  }
+</main>

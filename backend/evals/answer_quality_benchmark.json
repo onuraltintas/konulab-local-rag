@@ -1,0 +1,32 @@
+[
+  {
+    "id": "regex-definition",
+    "topic": "Metin Temsili ve Düzenli İfadeler",
+    "query": "Düzenli ifadeler nedir ve metin ön işlemde ne işe yarar?",
+    "expected_any": ["mini bir dildir"]
+  },
+  {
+    "id": "unicode-normalization",
+    "topic": "Karakter ve Yapısal Normalizasyon",
+    "query": "Unicode NFC ve NFKC normalizasyonu arasındaki temel fark nedir?",
+    "expected_any": ["NFKC dönüştürmesinde", "NFC ile NFD arasındaki ilişki"]
+  },
+  {
+    "id": "word-tokenization",
+    "topic": "Sözcük Tabanlı Tokenizasyon",
+    "query": "Sözcük tabanlı tokenizasyonda en küçük birim nedir ve regex kullanmak neden zor olabilir?",
+    "expected_any": ["en küçük birimi sözcük", "kalıplar birbirleriyle çakışabilmektedir"]
+  },
+  {
+    "id": "bpe-normalization",
+    "topic": "BPE Algoritması ve Uygulamaları",
+    "query": "Karakter tabanlı BPE uygulamasından önce normalizasyon neden yapılır?",
+    "expected_any": ["Karakter tabanlı BPE algoritmasını", "normalizasyon işlemlerini"]
+  },
+  {
+    "id": "tfidf-class",
+    "topic": "Metin Vektörizasyon Teknikleri",
+    "query": "scikit-learn ile TF-IDF vektörizasyonu hangi sınıfla yapılır ve çıktı neyi temsil eder?",
+    "expected_any": ["TfidfVectorizer"]
+  }
+]

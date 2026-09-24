@@ -1,0 +1,41 @@
+# ASUS Ascent GX10 / DGX Spark için GPU API katmanı.
+# Linux host network sayesinde konteynerdeki API, hostta 127.0.0.1'e bağlı
+# Ollama sunucusuna güvenli biçimde erişir; Ollama'yı LAN'a açmaya gerek kalmaz.
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+      args:
+        GPU_BASE_IMAGE: ${NGC_PYTORCH_IMAGE:-nvcr.io/nvidia/pytorch:25.10-py3}
+    depends_on:
+      qdrant:
+        condition: service_started
+    network_mode: host
+    gpus: all
+    environment:
+      DATABASE_URL: sqlite:///./data/learning-platform.db
+      STORAGE_PATH: ./data/sources
+      ALLOWED_ORIGINS: http://localhost:4200,http://127.0.0.1:4200
+      QDRANT_URL: http://127.0.0.1:6333
+      QDRANT_COLLECTION: lesson_sections_turkish_e5_large_hybrid_v1
+      EMBEDDING_MODEL: ytu-ce-cosmos/turkish-e5-large
+      EMBEDDING_DEVICE: cuda
+      EMBEDDING_BATCH_SIZE: 32
+      OLLAMA_BASE_URL: http://127.0.0.1:11434
+      OLLAMA_MODEL: qwen3.8:27b
+      VISION_MODEL: qwen3.8:27b
+      OLLAMA_CONTEXT_LENGTH: 32768
+      OLLAMA_THINK: "false"
+      HF_HOME: /models/huggingface
+      TOKENIZERS_PARALLELISM: "false"
+    volumes:
+      - ./backend/data:/app/data
+      # Kalite değerlendirmesi yalnızca açık çağrıyla çalışır; ders kaynakları
+      # API imajına kopyalanmaz ve konteynerden değiştirilemez.
+      - ./Doc:/workspace/Doc:ro
+      - hf_cache:/models/huggingface
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
