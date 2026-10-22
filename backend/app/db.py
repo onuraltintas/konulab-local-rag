@@ -42,12 +42,21 @@ def migrate_schema() -> None:
     conversation_columns = {column["name"] for column in inspector.get_columns("conversations")}
     profile_columns = {column["name"] for column in inspector.get_columns("learner_profiles")}
     asset_columns = {column["name"] for column in inspector.get_columns("document_assets")}
+    conversion_columns = {column["name"] for column in inspector.get_columns("document_conversions")}
     with engine.begin() as connection:
+        if "formula_review_hash" not in conversion_columns:
+            connection.execute(text("ALTER TABLE document_conversions ADD COLUMN formula_review_hash VARCHAR(64)"))
         for name, definition in analysis_additions.items():
             if name not in analysis_columns:
                 connection.execute(text(f"ALTER TABLE document_analyses ADD COLUMN {name} {definition}"))
         if "lesson_title" not in document_columns:
             connection.execute(text("ALTER TABLE source_documents ADD COLUMN lesson_title VARCHAR(255)"))
+        if "contextual_enrichment" not in document_columns:
+            connection.execute(text("ALTER TABLE source_documents ADD COLUMN contextual_enrichment BOOLEAN NOT NULL DEFAULT 0"))
+        section_columns = {column["name"] for column in inspector.get_columns("document_sections")}
+        for name, definition in {"search_context": "TEXT", "search_context_metadata": "JSON"}.items():
+            if name not in section_columns:
+                connection.execute(text(f"ALTER TABLE document_sections ADD COLUMN {name} {definition}"))
         if "profile_id" not in feedback_columns:
             connection.execute(text("ALTER TABLE learner_feedback ADD COLUMN profile_id CHAR(32)"))
         if "review_status" not in feedback_columns:
@@ -63,6 +72,10 @@ def migrate_schema() -> None:
         if "user_id" not in profile_columns:
             connection.execute(text("ALTER TABLE learner_profiles ADD COLUMN user_id CHAR(32)"))
         asset_additions = {
+            "table_index": "INTEGER",
+            "table_repair_required": "BOOLEAN NOT NULL DEFAULT 0",
+            "proposed_table": "JSON",
+            "table_validation": "JSON",
             "structured_markdown": "TEXT",
             "row_count": "INTEGER",
             "column_count": "INTEGER",

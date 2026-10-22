@@ -64,6 +64,7 @@ export interface TopicQuiz {
 }
 
 export interface SourceDocument {
+  contextual_enrichment?: boolean;
   id: string;
   logical_key: string;
   source_name: string;
@@ -81,6 +82,15 @@ export interface UploadResponse {
   action: 'created' | 'replaced' | 'unchanged' | 'reindexed';
   document: SourceDocument;
   section_count: number;
+}
+
+export interface DocumentIndexJob {
+  document_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  stage: string;
+  progress: number;
+  message: string | null;
+  contextual_enrichment: boolean;
 }
 
 export interface BulkDeleteResponse {
@@ -166,6 +176,11 @@ export interface DocumentAnalysis {
 }
 
 export interface DocumentAsset {
+  table_index?: number | null;
+  table_repair_required?: boolean;
+  proposed_table?: { rows: number; columns: number; cells: unknown[]; refinement?: { status: string; cells: { row: number; column: number; before: string; after?: string; accepted: boolean; dpi: number; verification_method?: string }[]; errors: string[]; context_added: string[]; unresolved_words?: string[]; structure_review?: { issues: string[] } } } | null;
+  proposed_markdown?: string | null;
+  table_validation?: { status: string; message: string; word_recall: number; word_precision: number; missing_numbers: string[]; additional_numbers: string[] } | null;
   id: string;
   page_number: number | null;
   kind: string;
@@ -193,6 +208,9 @@ export interface MarkdownRevision {
 }
 
 export interface DocumentConversion {
+  formula_review_required?: boolean;
+  formula_review_hash?: string | null;
+  quality_report?: { requires_review?: boolean; corrected_font_characters?: number; source_page_count?: number; issues?: {type: string; pages?: number[]; text?: string}[]; formulas?: { latex: string; provenance?: { page_no: number }[]; validation?: {status: string; needs_review: boolean; reason: string; independent_latex?: string; pdf_text?: {status: string; source_text: string}} }[] };
   document: SourceDocument;
   status: 'processing' | 'ready' | 'published' | 'failed';
   markdown: string | null;
@@ -373,7 +391,7 @@ export interface ConversationDetail {
 export class LearningApiService {
   private readonly http = inject(HttpClient);
   private readonly apiRoot = 'http://localhost:8000/api';
-  private readonly sessionKey = 'konulab.auth-session.v1';
+  private readonly sessionKey = 'konulab.auth-session.v2';
 
   get session(): AuthSession | null {
     try { return JSON.parse(localStorage.getItem(this.sessionKey) ?? 'null') as AuthSession | null; } catch { return null; }
@@ -487,18 +505,32 @@ export class LearningApiService {
     });
   }
 
-  publishConversion(documentId: string): Observable<DocumentAnalysis> {
+  publishConversion(documentId: string, acceptFormulaWarnings = false, expectedMarkdownHash: string | null = null): Observable<DocumentAnalysis> {
     return this.http.post<DocumentAnalysis>(`${this.apiRoot}/documents/${documentId}/publish-conversion`, {
       confirmation: 'OGRENME_HARITASINA_DONUSTUR',
+      accept_formula_warnings: acceptFormulaWarnings,
+      expected_markdown_hash: expectedMarkdownHash,
     });
   }
 
   documentAssetUrl(asset: DocumentAsset): string {
-    return `${this.apiRoot}${asset.url}`;
+    return new URL(asset.url, this.apiRoot).href;
   }
 
-  analyzeDocumentAsset(documentId: string, assetId: string): Observable<DocumentAsset> {
-    return this.http.post<DocumentAsset>(`${this.apiRoot}/documents/${documentId}/assets/${assetId}/analyze`, {});
+  formulaImageUrl(documentId: string, index: number): string {
+    return `${this.apiRoot}/documents/${documentId}/formulas/${index}/image`;
+  }
+
+  downloadDocumentAsset(documentId: string, assetId: string): Observable<Blob> {
+    return this.http.get(`${this.apiRoot}/documents/${documentId}/assets/${assetId}`, { responseType: 'blob' });
+  }
+
+  downloadConversionBundle(documentId: string): Observable<Blob> {
+    return this.http.get(`${this.apiRoot}/documents/${documentId}/conversion/bundle`, { responseType: 'blob' });
+  }
+
+  analyzeDocumentAsset(documentId: string, assetId: string, refineOnly = false): Observable<DocumentAsset> {
+    return this.http.post<DocumentAsset>(`${this.apiRoot}/documents/${documentId}/assets/${assetId}/analyze${refineOnly ? '?refine_only=true' : ''}`, {});
   }
 
   analyzeAllDocumentAssets(documentId: string, assetIds?: string[]): Observable<DocumentAsset[]> {
@@ -517,6 +549,14 @@ export class LearningApiService {
     return this.http.get<DocumentAnalysis>(`${this.apiRoot}/documents/${documentId}/analysis`);
   }
 
+  getIndexJob(documentId: string): Observable<DocumentIndexJob | null> {
+    return this.http.get<DocumentIndexJob | null>(`${this.apiRoot}/documents/${documentId}/index-job`);
+  }
+
+  startIndexJob(documentId: string, contextualEnrichment: boolean): Observable<DocumentIndexJob> {
+    return this.http.post<DocumentIndexJob>(`${this.apiRoot}/documents/${documentId}/index-job`, { contextual_enrichment: contextualEnrichment });
+  }
+
   reanalyzeDocument(documentId: string): Observable<DocumentAnalysis> {
     return this.http.post<DocumentAnalysis>(`${this.apiRoot}/documents/${documentId}/reanalyze`, {});
   }
@@ -528,10 +568,11 @@ export class LearningApiService {
     });
   }
 
-  approveDocumentAnalysis(documentId: string, lessonTitle: string, decisions: TopicApprovalDecision[], allowExistingLessonMerge = false): Observable<DocumentAnalysis> {
+  approveDocumentAnalysis(documentId: string, lessonTitle: string, decisions: TopicApprovalDecision[], allowExistingLessonMerge = false, contextualEnrichment = false): Observable<DocumentAnalysis> {
     return this.http.post<DocumentAnalysis>(`${this.apiRoot}/documents/${documentId}/approve-analysis`, {
       lesson_title: lessonTitle,
       allow_existing_lesson_merge: allowExistingLessonMerge,
+      contextual_enrichment: contextualEnrichment,
       decisions,
     });
   }

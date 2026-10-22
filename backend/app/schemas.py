@@ -98,6 +98,7 @@ class DocumentResponse(BaseModel):
     logical_key: str
     source_name: str
     lesson_title: str | None
+    contextual_enrichment: bool = False
     media_type: str
     content_hash: str
     version: int
@@ -113,7 +114,26 @@ class UploadResponse(BaseModel):
     section_count: int
 
 
+class ReindexRequest(BaseModel):
+    contextual_enrichment: bool | None = None
+
+
+class DocumentIndexJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    document_id: UUID
+    status: str
+    stage: str
+    progress: int
+    message: str | None
+    contextual_enrichment: bool
+
+
 class DocumentAssetResponse(BaseModel):
+    table_index: int | None = None
+    table_repair_required: bool = False
+    proposed_table: dict | None = None
+    table_validation: dict | None = None
+    proposed_markdown: str | None = None
     id: UUID
     page_number: int | None
     kind: str
@@ -164,12 +184,17 @@ class DocumentConversionResponse(BaseModel):
     assets: list[DocumentAssetResponse] = Field(default_factory=list)
     current_revision_number: int = 0
     revisions: list[MarkdownRevisionResponse] = Field(default_factory=list)
+    quality_report: dict = Field(default_factory=dict)
+    formula_review_required: bool = False
+    formula_review_hash: str | None = None
 
 
 class ConversionPublishRequest(BaseModel):
     """Dönüştürülmüş metni konu analizine geçirirken açık kullanıcı onayı."""
 
     confirmation: Literal["OGRENME_HARITASINA_DONUSTUR"]
+    accept_formula_warnings: bool = False
+    expected_markdown_hash: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class MarkdownSaveRequest(BaseModel):
@@ -283,6 +308,7 @@ class TopicApprovalDecision(BaseModel):
 
 
 class AnalysisApprovalRequest(BaseModel):
+    contextual_enrichment: bool = False
     lesson_title: str | None = Field(default=None, max_length=255)
     allow_existing_lesson_merge: bool = False
     decisions: list[TopicApprovalDecision] = Field(min_length=1, max_length=100)

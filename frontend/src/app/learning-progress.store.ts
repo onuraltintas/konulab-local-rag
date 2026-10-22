@@ -29,7 +29,7 @@ interface ProgressSnapshot {
   topics: Record<string, TopicProgress>;
 }
 
-const STORAGE_KEY = 'konulab.learning-progress.v1';
+const STORAGE_KEY = 'konulab.learning-progress.v2';
 const REVIEW_DELAYS_MS = [24 * 60 * 60 * 1_000, 3 * 24 * 60 * 60 * 1_000, 7 * 24 * 60 * 60 * 1_000];
 
 @Injectable({ providedIn: 'root' })

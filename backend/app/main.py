@@ -7,6 +7,8 @@ import shutil
 import sqlite3
 import tarfile
 import tempfile
+import zipfile
+from io import BytesIO
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +17,7 @@ from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -30,10 +32,15 @@ from app.conversion import (
 )
 from app.auth import hash_password, hash_session_token, new_session_token, verify_password
 from app.config import get_settings
+from app.table_repair import candidate_markdown, candidate_html, validate_against_source
+from app.table_refinement import refine_table
+from app.formula_validation import validate_pdf_formulas, formula_signature, formula_review_required, formula_crop
 from app.db import Base, SessionLocal, engine, get_db, migrate_schema
 from app.document_analysis import DocumentAnalysisUnavailableError, DocumentAnalyzer, SectionAnalysisInput, get_document_analyzer
 from app.embeddings import EmbeddingUnavailableError, get_embedder, get_sparse_embedder
 from app.indexing import index_document, rechunk_document_sections, remove_document_vectors
+from app.contextual_indexing import enrich_document
+from app.reindexing import BUSY, queue_lock, reserve_job, run_index_job
 from app.llm import OllamaUnavailableError, get_ollama_client
 from app.runtime_models import (
     ModelProviderError,
@@ -51,6 +58,7 @@ from app.models import (
     Conversation,
     ConversationMessage,
     DocumentAnalysis,
+    DocumentIndexJob,
     DocumentAsset,
     DocumentConversion,
     DocumentMarkdownRevision,
@@ -76,6 +84,8 @@ from app.models import (
 )
 from app.schemas import (
     AnalysisApprovalRequest,
+    ReindexRequest,
+    DocumentIndexJobResponse,
     BackupResponse,
     BulkDeleteResponse,
     DocumentBulkDeleteRequest,
@@ -143,7 +153,6 @@ from app.schemas import (
     AuthRegisterRequest,
     AuthSessionResponse,
 )
-from app.seed import seed_topics
 from app.vector_store import VectorStoreUnavailableError, get_vector_store
 
 
@@ -169,6 +178,10 @@ async def lifespan(_: FastAPI):
     # yeni ilerleme ekranında doğrudan onay bekliyor olarak göster.
     with SessionLocal() as database:
         initialize_runtime_model_config(database)
+        for job in database.scalars(select(DocumentIndexJob).where(DocumentIndexJob.status.in_(BUSY))):
+            job.status, job.stage = "failed", "interrupted"
+            job.message = "Sunucu yeniden başladı; işlem yarım kaldı. Yeniden indekslemeyi tekrar başlatın."
+        database.commit()
         legacy_analyses = list(
             database.scalars(select(DocumentAnalysis).where(DocumentAnalysis.status == AnalysisStatus.PENDING))
         )
@@ -179,9 +192,6 @@ async def lifespan(_: FastAPI):
             analysis.message = "Konu önerileri incelemeniz için hazır."
         if legacy_analyses:
             database.commit()
-    if settings.seed_default_topics:
-        with SessionLocal() as database:
-            seed_topics(database)
     yield
 
 
@@ -387,6 +397,11 @@ def serialize_analysis(analysis: DocumentAnalysis) -> DocumentAnalysisResponse:
 
 def serialize_document_asset(conversion: DocumentConversion, asset: DocumentAsset) -> DocumentAssetResponse:
     return DocumentAssetResponse(
+        table_index=asset.table_index,
+        table_repair_required=asset.table_repair_required,
+        proposed_table=asset.proposed_table,
+        table_validation=asset.table_validation,
+        proposed_markdown=candidate_markdown(asset.proposed_table) if asset.proposed_table else None,
         id=asset.id,
         page_number=asset.page_number,
         kind=asset.kind,
@@ -497,6 +512,14 @@ def serialize_conversion(conversion: DocumentConversion, *, include_markdown: bo
             # göstermeyelim; işçi sonraki denemede kaydı hataya alır.
             markdown = None
     revisions = sorted(conversion.revisions, key=lambda item: item.revision_number, reverse=True)
+    quality_report = {}
+    try:
+        quality_path = Path(conversion.document.source_path + ".quality.json")
+        if quality_path.is_file():
+            quality_report = json.loads(quality_path.read_text(encoding="utf-8"))
+            quality_report.pop("tables", None)  # HTML tabloları ZIP içinde sunulur.
+    except (OSError, ValueError):
+        quality_report = {"requires_review": True, "issues": [{"type": "quality_report_unavailable"}]}
     return DocumentConversionResponse(
         document=serialize_document(conversion.document),
         status=conversion.status,
@@ -515,6 +538,9 @@ def serialize_conversion(conversion: DocumentConversion, *, include_markdown: bo
         assets=[serialize_document_asset(conversion, asset) for asset in conversion.assets],
         current_revision_number=revisions[0].revision_number if revisions else 0,
         revisions=[serialize_markdown_revision(revision) for revision in revisions],
+        quality_report=quality_report,
+        formula_review_required=formula_review_required(quality_report, markdown) if markdown is not None else bool(quality_report.get("formulas")),
+        formula_review_hash=conversion.formula_review_hash,
     )
 
 
@@ -1892,18 +1918,32 @@ def convert_document_to_markdown(document_id: UUID) -> None:
         database.commit()
 
         converted = convert_to_markdown(Path(document.source_path))
+        if Path(document.source_path).suffix.lower() == ".pdf" and converted.quality_report.get("formulas"):
+            conversion.stage = "formula_validation"
+            conversion.progress = 70
+            conversion.message = "Formüller kaynak PDF ve bağımsız görsel okumayla karşılaştırılıyor."
+            database.commit()
+            def formula_progress(done, total):
+                conversion.progress = 70 + int(12 * done / max(1, total))
+                conversion.message = f"Formül kaynak kontrolü: {done}/{total}."
+                database.commit()
+            asyncio.run(validate_pdf_formulas(Path(document.source_path), converted.quality_report, get_ollama_client(), formula_progress))
+        converted.quality_report["formula_signature"] = formula_signature(converted.markdown)
+        for suffix, payload in ((".structure.json", converted.source_structure), (".quality.json", converted.quality_report)):
+            Path(document.source_path + suffix).write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        if converted.source_pages:
+            page_directory = Path(document.source_path + ".pages")
+            page_directory.mkdir(parents=True, exist_ok=True)
+            for number, content in enumerate(converted.source_pages, start=1):
+                (page_directory / f"page-{number:04}.png").write_bytes(content)
         conversion.stage = "saving"
         conversion.progress = 85
         conversion.message = "Markdown inceleme sürümü güvenle kaydediliyor."
         database.commit()
 
-        initial_revision = create_markdown_revision(
-            database,
-            conversion,
-            converted.markdown,
-            reason="conversion",
-        )
-        markdown_hash = initial_revision.content_hash
+        markdown_hash = hashlib.sha256(normalized_markdown_bytes(converted.markdown)).hexdigest()
+        markdown = converted.markdown
+        saved_assets = []
 
         # Varlıklar orijinal ve Markdown sürümüyle aynı yaşam döngüsündedir.
         # İçeriğe dayalı dosya adı, aynı görselin sürüm içinde yeniden yazılmasını
@@ -1914,8 +1954,7 @@ def convert_document_to_markdown(document_id: UUID) -> None:
             asset_path = asset_directory / f"{asset.kind}-{position}-{asset_hash[:12]}.png"
             asset_path.parent.mkdir(parents=True, exist_ok=True)
             asset_path.write_bytes(asset.content)
-            database.add(
-                DocumentAsset(
+            saved_asset = DocumentAsset(
                     conversion_id=conversion.id,
                     page_number=asset.page_number,
                     kind=asset.kind,
@@ -1924,8 +1963,27 @@ def convert_document_to_markdown(document_id: UUID) -> None:
                     structured_markdown=asset.structured_markdown,
                     row_count=asset.row_count,
                     column_count=asset.column_count,
+                    table_index=asset.table_index,
+                    table_repair_required=any(table.get("index") == asset.table_index and table.get("source_image_fallback") for table in converted.quality_report.get("tables", [])) if asset.kind == "table" else False,
                 )
-            )
+            database.add(saved_asset)
+            saved_assets.append(saved_asset)
+
+        database.flush()
+        # Görsel bağlantıları açıklama onayından bağımsız olarak kaynak yerinde
+        # bulunur; açıklama daha sonra aynı belirtece eklenir.
+        for asset in saved_assets if len(saved_assets) == converted.image_count + converted.table_count else []:
+            if asset.kind == "picture":
+                marker = f"<!-- konulab-asset:{asset.id} -->"
+                path = f"./{Path(asset.asset_path).parent.name}/{Path(asset.asset_path).name}"
+                block = marker + f"\n\n![Dokümandan çıkarılan görsel]({path})"
+                if "<!-- image -->" in markdown:
+                    markdown = markdown.replace("<!-- image -->", block, 1)
+        for index, asset in enumerate(item for item in saved_assets if item.kind == "table" and len(saved_assets) == converted.image_count + converted.table_count):
+            marker = f"<!-- konulab-table:{index} -->"
+            path = f"./{Path(asset.asset_path).parent.name}/{Path(asset.asset_path).name}"
+            markdown = markdown.replace(marker, marker + f"\n\n![Kaynak tablo]({path})", 1)
+        create_markdown_revision(database, conversion, markdown, reason="conversion")
 
         conversion.converter = converted.converter
         conversion.converter_version = converted.converter_version
@@ -1933,10 +1991,29 @@ def convert_document_to_markdown(document_id: UUID) -> None:
         conversion.page_count = converted.page_count
         conversion.table_count = converted.table_count
         conversion.image_count = converted.image_count
+        automatic_tables = [asset for asset in saved_assets if asset.table_repair_required]
+        if automatic_tables:
+            conversion.stage = "table_repair"
+            conversion.progress = 90
+            conversion.message = f"Şüpheli tablolar görsel modelle sırayla okunuyor: 0/{len(automatic_tables)}."
+            for asset in automatic_tables:
+                asset.analysis_status = AssetAnalysisStatus.PROCESSING
+                asset.message = "Otomatik tablo çıkarımı sırasında bekliyor."
+            database.commit()
+            for number, asset in enumerate(automatic_tables, start=1):
+                describe_document_asset(document_id, asset.id)
+                database.expire_all()
+                conversion = database.get(DocumentConversion, conversion.id)
+                conversion.progress = 90 + int(9 * number / len(automatic_tables))
+                conversion.message = f"Görsel model tablo kontrolü: {number}/{len(automatic_tables)} tamamlandı."
+                database.commit()
         conversion.status = ConversionStatus.READY
         conversion.stage = "review"
         conversion.progress = 100
-        conversion.message = "Markdown hazır. İnceleyip öğrenme haritasına dönüştürmeyi onaylayabilirsiniz."
+        issue_count = len(converted.quality_report.get("issues", []))
+        conversion.message = f"Markdown hazır. {issue_count} bölüm kaynak kontrolü gerektiriyor." if issue_count else "Markdown hazır. İnceleyip öğrenme haritasına dönüştürmeyi onaylayabilirsiniz."
+        if automatic_tables:
+            conversion.message = f"{len(automatic_tables)} şüpheli tablo görsel modelle işlendi. Tablo önerilerini inceleyip kabul edin veya özgün tabloyu koruyun."
         conversion.error_message = None
         conversion.completed_at = datetime.now(timezone.utc)
         database.commit()
@@ -1990,17 +2067,33 @@ def markdown_with_visual_appendix(markdown: str, assets: list[DocumentAsset]) ->
                 base = f"{base.rstrip()}\n\n{marker}"
     for asset in pictures:
         marker = f"<!-- konulab-asset:{asset.id} -->"
-        description_block = ""
+        relative_asset_path = f"./{Path(asset.asset_path).parent.name}/{Path(asset.asset_path).name}"
+        description_block = f"\n\n![Dokümandan çıkarılan görsel]({relative_asset_path})"
         if asset.inclusion_status == "accepted" and asset.analysis_status == AssetAnalysisStatus.READY and asset.description:
             review_note = " Belirsizlik olduğu için görselden doğrulayın." if asset.needs_review else ""
-            relative_asset_path = f"./{Path(asset.asset_path).parent.name}/{Path(asset.asset_path).name}"
-            description_block = f"\n\n![Dokümandan çıkarılan görsel]({relative_asset_path})\n\n> Görsel açıklaması: {asset.description.strip()}{review_note}"
+            description_block += f"\n\n> Görsel açıklaması: {asset.description.strip()}{review_note}"
         # Açıklama bloğu, Docling konum belirtecinin hemen sonrasındadır.
         # Önceki kabul denemesinin bloğu varsa yalnız o belirteçte yenilenir.
-        existing = re.escape(marker) + r"(?:\n\n!\[Dokümandan çıkarılan görsel\]\([^\n]+\)\n\n> Görsel açıklaması:[^\n]*)?"
-        base = re.sub(existing, marker + description_block, base, count=1)
+        existing = re.escape(marker) + r"(?:\n\n!\[Dokümandan çıkarılan görsel\]\([^\n]+\))?(?:\n\n> Görsel açıklaması:[^\n]*)?"
+        base = re.sub(existing, lambda _: marker + description_block, base, count=1)
     described = []
     for asset in assets:
+        if asset.kind == "table" and getattr(asset, "table_repair_required", False) and asset.table_index is not None:
+            index = asset.table_index
+            start, end = f"<!-- konulab-table-body:{index}:start -->", f"<!-- konulab-table-body:{index}:end -->"
+            body = asset.structured_markdown or ""
+            if asset.inclusion_status == "accepted" and asset.proposed_table:
+                body = candidate_markdown(asset.proposed_table)
+                body += "\n\n> Görsel modelden yeniden çıkarıldı; kullanıcı tarafından kabul edildi."
+                if asset.needs_review:
+                    body += " Kaynak eşleşmesi tam doğrulanamadı; kaynak görseli esas alınmalıdır."
+            elif asset.inclusion_status == "rejected":
+                body += "\n\n> Kullanıcı özgün tabloyu korumayı seçti."
+            framed = re.escape(start) + r".*?" + re.escape(end)
+            if re.search(framed, base, flags=re.DOTALL):
+                base = re.sub(framed, lambda _: f"{start}\n\n{body}\n\n{end}", base, count=1, flags=re.DOTALL)
+            # Eski belgede güvenilir konum belirteci yoksa yanlış tabloyu değiştirme.
+            continue
         if asset.kind != "table" or asset.inclusion_status != "accepted" or asset.analysis_status != AssetAnalysisStatus.READY or not asset.description:
             continue
         if asset.structured_markdown and asset.structured_markdown in base:
@@ -2023,14 +2116,16 @@ def persist_visual_appendix(database: Session, conversion: DocumentConversion, a
     """VLM ekini eski sürümü ezmeden ayrı bir Markdown revizyonu olarak kaydeder."""
     if not conversion.markdown_path:
         raise FileNotFoundError("Markdown inceleme dosyası bulunamadı.")
+    if not conversion.markdown_path or not Path(conversion.markdown_path).is_file():
+        raise HTTPException(status_code=409, detail="Markdown dosyası bulunamadı.")
     markdown_path = Path(conversion.markdown_path)
     markdown = markdown_path.read_text(encoding="utf-8")
     updated_markdown = markdown_with_visual_appendix(markdown, assets)
     create_markdown_revision(database, conversion, updated_markdown, reason="visual_appendix")
 
 
-def describe_document_asset(document_id: UUID, asset_id: UUID) -> None:
-    """Kullanıcının seçtiği tek tablo/görsel için isteğe bağlı VLM açıklaması üretir."""
+def describe_document_asset(document_id: UUID, asset_id: UUID, refine_only: bool = False) -> None:
+    """Seçilen görseli açıklar veya şüpheli tabloyu onaya sunmak üzere yeniden çıkarır."""
     database = SessionLocal()
     try:
         conversion = database.scalar(select(DocumentConversion).where(DocumentConversion.document_id == document_id))
@@ -2039,7 +2134,7 @@ def describe_document_asset(document_id: UUID, asset_id: UUID) -> None:
             conversion is None
             or asset is None
             or asset.conversion_id != conversion.id
-            or conversion.status != ConversionStatus.READY
+            or (conversion.status != ConversionStatus.READY and not (conversion.status == ConversionStatus.PROCESSING and asset.table_repair_required))
             or asset.analysis_status != AssetAnalysisStatus.PROCESSING
         ):
             return
@@ -2048,25 +2143,34 @@ def describe_document_asset(document_id: UUID, asset_id: UUID) -> None:
             raise FileNotFoundError("Görsel dosyası bulunamadı.")
         asset.message = "Görsel model kaynağı inceliyor."
         database.commit()
-        result = asyncio.run(
-            get_ollama_client().describe_visual_asset(asset_path.read_bytes(), asset.kind, asset.page_number)
-        )
+        if asset.table_repair_required:
+            result = asset.proposed_table if refine_only and asset.proposed_table else asyncio.run(get_ollama_client().reconstruct_table(asset_path.read_bytes(), asset.page_number))
+            quality_path = Path(conversion.document.source_path + ".quality.json")
+            quality = json.loads(quality_path.read_text(encoding="utf-8")) if quality_path.is_file() else {}
+            source = next((table.get("validation", {}).get("source_text", "") for table in quality.get("tables", []) if table.get("index") == asset.table_index), "")
+            initial_validation = validate_against_source(result, source, quality.get("font_aliases", {}))
+            if refine_only or initial_validation["status"] != "passed":
+                def refinement_progress(message):
+                    asset.message = message
+                    database.commit()
+                result = asyncio.run(refine_table(result, Path(conversion.document.source_path), asset.table_index, source, quality.get("font_aliases", {}), get_ollama_client(), asset_path.parent / f"refinement-{asset.id}-{uuid4().hex[:8]}", refinement_progress))
+            asset.proposed_table = result
+            asset.table_validation = validate_against_source(result, source, quality.get("font_aliases", {}))
+            result["needs_review"] = result["needs_review"] or asset.table_validation["status"] != "passed"
+            asset.inclusion_status = "pending"
+        else:
+            result = asyncio.run(get_ollama_client().describe_visual_asset(asset_path.read_bytes(), asset.kind, asset.page_number))
+        asset.inclusion_status = "pending"
         asset.description = str(result["description"])
         asset.confidence = int(result["confidence"])
         asset.needs_review = bool(result["needs_review"])
         asset.analysis_status = AssetAnalysisStatus.READY
         asset.model = current_runtime_model_config().vision_model
-        asset.message = "Görsel açıklaması hazır; Markdown ekinde inceleyebilirsiniz."
+        asset.message = "Tablo yeniden çıkarıldı; doğrulama sonucunu inceleyip onaylayın." if asset.table_repair_required else "Görsel açıklaması hazır; kaynak konumunda eklemek için onaylayın."
         asset.error_message = None
         asset.analyzed_at = datetime.now(timezone.utc)
-        assets = list(
-            database.scalars(
-                select(DocumentAsset)
-                .where(DocumentAsset.conversion_id == conversion.id)
-                .order_by(DocumentAsset.page_number, DocumentAsset.created_at)
-            )
-        )
-        persist_visual_appendix(database, conversion, assets)
+        # Üretim yalnızca bir öneridir. Önceden kabul edilmiş Markdown dahi
+        # yeni model yanıtıyla kullanıcı onayı olmadan değiştirilmez.
         database.commit()
     except (OllamaUnavailableError, OSError, ValueError) as error:
         database.rollback()
@@ -2094,6 +2198,24 @@ def get_document_conversion(document_id: UUID, database: Session = Depends(get_d
     if conversion is None:
         raise HTTPException(status_code=404, detail="Bu doküman için dönüşüm kaydı bulunamadı.")
     return serialize_conversion(conversion, include_markdown=True)
+
+
+@app.get("/api/documents/{document_id}/formulas/{formula_index}/image")
+def get_formula_source_image(document_id: UUID, formula_index: int, database: Session = Depends(get_db)):
+    document = database.get(SourceDocument, document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Doküman bulunamadı.")
+    if Path(document.source_path).suffix.lower() != ".pdf":
+        raise HTTPException(status_code=404, detail="Bu belge için PDF formül kırpımı bulunmuyor.")
+    try:
+        quality = json.loads(Path(document.source_path + ".quality.json").read_text(encoding="utf-8"))
+        formulas = quality.get("formulas", [])
+        if formula_index < 0 or formula_index >= len(formulas):
+            raise ValueError("Formül bulunamadı.")
+        image, _ = formula_crop(Path(document.source_path), formulas[formula_index])
+        return Response(content=image, media_type="image/png", headers={"Cache-Control": "no-store"})
+    except (OSError, ValueError, KeyError, IndexError):
+        raise HTTPException(status_code=404, detail="Formülün kaynak görüntüsü alınamadı.")
 
 
 @app.put("/api/documents/{document_id}/conversion/markdown", response_model=DocumentConversionResponse)
@@ -2197,6 +2319,74 @@ def restore_document_markdown_revision(
     return serialize_conversion(conversion, include_markdown=True)
 
 
+@app.get("/api/documents/{document_id}/conversion/bundle")
+def download_conversion_bundle(document_id: UUID, database: Session = Depends(get_db)) -> Response:
+    conversion = database.scalar(select(DocumentConversion).where(DocumentConversion.document_id == document_id))
+    if conversion is None or conversion.status not in {ConversionStatus.READY, ConversionStatus.PUBLISHED}:
+        raise HTTPException(status_code=409, detail="Markdown henüz hazır değil.")
+    document = database.get(SourceDocument, document_id)
+    # Paket, kayıtlı inceleme sürümünü ve ona bağlı tüm varlıkları içerir.
+    assets = list(database.scalars(select(DocumentAsset).where(DocumentAsset.conversion_id == conversion.id)))
+    if not conversion.markdown_path or not Path(conversion.markdown_path).is_file():
+        raise HTTPException(status_code=409, detail="Markdown dosyası bulunamadı.")
+    markdown_path = Path(conversion.markdown_path)
+    markdown = markdown_path.read_text(encoding="utf-8")
+    pictures = [asset for asset in assets if asset.kind == "picture"]
+    if len(assets) != conversion.image_count + conversion.table_count:
+        raise HTTPException(status_code=409, detail="Tüm görsel ve tablolar çıkarılmamış. Eksiksiz paket için belge yeniden dönüştürülmeli.")
+    for asset in pictures:
+        marker = f"<!-- konulab-asset:{asset.id} -->"
+        link = f"![Doküman görseli](assets/{Path(asset.asset_path).name})"
+        existing_path = f"./{Path(asset.asset_path).parent.name}/{Path(asset.asset_path).name}"
+        if existing_path in markdown:
+            continue
+        if marker in markdown:
+            markdown = markdown.replace(marker, marker + "\n\n" + link, 1)
+        elif "<!-- image -->" in markdown:
+            markdown = markdown.replace("<!-- image -->", link, 1)
+    for asset in assets:
+        if not Path(asset.asset_path).is_file():
+            raise HTTPException(status_code=409, detail="Paket oluşturulamadı: kayıtlı görsel dosyası eksik.")
+        directory = Path(asset.asset_path).parent.name
+        markdown = markdown.replace(f"./{directory}/", "assets/")
+    output = BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        quality_path = Path(document.source_path + ".quality.json")
+        if quality_path.is_file():
+            quality = json.loads(quality_path.read_text(encoding="utf-8"))
+            source_page_count = int(quality.get("source_page_count", 0))
+            if source_page_count:
+                page_links = []
+                for number in range(1, source_page_count + 1):
+                    name = f"page-{number:04}.png"
+                    page_path = Path(document.source_path + ".pages") / name
+                    if not page_path.is_file():
+                        raise HTTPException(status_code=409, detail="Kaynak sayfa görüntüsü eksik; paket tamamlanamadı.")
+                    archive.write(page_path, f"source-pages/{name}")
+                    page_links.append(f'<p><a href="{name}">Kaynak sayfa {number}</a></p>')
+                archive.writestr("source-pages/index.html", '<!doctype html><meta charset="utf-8"><h1>Özgün PDF sayfa görünümleri</h1>' + "".join(page_links))
+                markdown += "\n\n[Özgün PDF’nin bütün sayfa görünümleri](source-pages/index.html)\n"
+            for table in quality.get("tables", []):
+                accepted_asset = next((asset for asset in assets if asset.table_index == table["index"] and asset.inclusion_status == "accepted" and asset.proposed_table), None)
+                html = candidate_html(accepted_asset.proposed_table) if accepted_asset else table.get("html")
+                if not html:
+                    continue
+                name = f"tables/table-{int(table['index']) + 1}.html"
+                archive.writestr(name, '<!doctype html><meta charset="utf-8"><style>table{border-collapse:collapse}td,th{border:1px solid #888;padding:6px}</style>' + html)
+                marker = table["marker"]
+                if marker in markdown:
+                    markdown = markdown.replace(marker, marker + f"\n\n[Tabloyu birleşik hücreleriyle görüntüle]({name})", 1)
+        archive.writestr("belge.md", markdown)
+        for suffix, filename in ((".structure.json", "conversion-structure.json"), (".quality.json", "conversion-quality.json")):
+            audit_path = Path(document.source_path + suffix)
+            if audit_path.is_file():
+                archive.write(audit_path, filename)
+        for asset in assets:
+            archive.write(asset.asset_path, f"assets/{Path(asset.asset_path).name}")
+        archive.writestr("manifest.json", json.dumps({"document_id": str(document_id), "source_name": document.source_name, "expected_pictures": conversion.image_count, "expected_tables": conversion.table_count, "exported_assets": len(assets)}, ensure_ascii=False, indent=2))
+    return Response(output.getvalue(), media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="konulab-markdown.zip"'})
+
+
 @app.get("/api/documents/{document_id}/assets/{asset_id}")
 def get_document_asset(document_id: UUID, asset_id: UUID, database: Session = Depends(get_db)) -> FileResponse:
     """İnceleme ekranına yalnızca kayda bağlı dönüştürülmüş görseli verir."""
@@ -2219,6 +2409,7 @@ def request_document_asset_analysis(
     asset_id: UUID,
     background_tasks: BackgroundTasks,
     database: Session = Depends(get_db),
+    refine_only: bool = False,
 ) -> DocumentAssetResponse:
     """Görsel model açıklamasını yalnızca kullanıcı seçtiğinde işleme alır."""
     conversion = database.scalar(select(DocumentConversion).where(DocumentConversion.document_id == document_id))
@@ -2229,13 +2420,15 @@ def request_document_asset_analysis(
         raise HTTPException(status_code=409, detail="Görsel açıklaması yalnızca yayın öncesi Markdown incelemesinde yapılabilir.")
     if asset.analysis_status == AssetAnalysisStatus.PROCESSING:
         raise HTTPException(status_code=409, detail="Bu görsel için açıklama zaten hazırlanıyor.")
+    if refine_only and (not asset.table_repair_required or not asset.proposed_table):
+        raise HTTPException(status_code=409, detail="Yüksek çözünürlüklü kontrol için önce tablo önerisi oluşturulmalı.")
     asset.analysis_status = AssetAnalysisStatus.PROCESSING
     asset.model = current_runtime_model_config().vision_model
     asset.message = "Görsel açıklama sırasına alındı."
     asset.error_message = None
     database.commit()
     database.refresh(asset)
-    background_tasks.add_task(describe_document_asset, document_id, asset.id)
+    background_tasks.add_task(describe_document_asset, document_id, asset.id, refine_only)
     return serialize_document_asset(conversion, asset)
 
 
@@ -2267,7 +2460,14 @@ def decide_document_asset_inclusion(document_id: UUID, asset_id: UUID, decision:
     if conversion is None or asset is None or asset.conversion_id != conversion.id:
         raise HTTPException(status_code=404, detail="Doküman varlığı bulunamadı.")
     if conversion.status != ConversionStatus.READY or asset.analysis_status != AssetAnalysisStatus.READY:
-        raise HTTPException(status_code=409, detail="Yalnız hazır açıklama yayın öncesinde kabul veya çıkarılabilir.")
+        if not (conversion.status == ConversionStatus.READY and asset.table_repair_required and decision == "rejected" and asset.analysis_status != AssetAnalysisStatus.PROCESSING):
+            raise HTTPException(status_code=409, detail="Yalnız hazır açıklama yayın öncesinde kabul veya çıkarılabilir.")
+    if asset.table_repair_required and decision == "accepted" and not asset.proposed_table:
+        raise HTTPException(status_code=409, detail="Kabul edilebilecek bir tablo önerisi bulunamadı.")
+    if asset.table_repair_required and decision == "accepted":
+        content = Path(conversion.markdown_path).read_text(encoding="utf-8") if conversion.markdown_path else ""
+        if f"<!-- konulab-table-body:{asset.table_index}:start -->" not in content:
+            raise HTTPException(status_code=409, detail="Tablonun kaynak konumu düzenleme sırasında kaldırılmış; güncel Markdown'ı inceleyin.")
     asset.inclusion_status = decision
     persist_visual_appendix(database, conversion, list(conversion.assets))
     database.commit()
@@ -2283,6 +2483,8 @@ def accept_all_ready_asset_descriptions(document_id: UUID, database: Session = D
         raise HTTPException(status_code=409, detail="Görsel açıklamaları tamamlanmadan toplu kabul yapılamaz.")
     for asset in conversion.assets:
         if asset.analysis_status == AssetAnalysisStatus.READY and asset.description and asset.inclusion_status != "rejected":
+            if asset.table_repair_required and (not asset.proposed_table or asset.needs_review):
+                continue
             asset.inclusion_status = "accepted"
     persist_visual_appendix(database, conversion, list(conversion.assets))
     database.commit()
@@ -2387,10 +2589,22 @@ def publish_conversion(
         raise HTTPException(status_code=404, detail="Yayınlanacak dönüşüm bulunamadı.")
     if conversion.status != ConversionStatus.READY:
         raise HTTPException(status_code=409, detail="Yalnızca incelemeye hazır Markdown yayınlanabilir.")
+    if any(asset.analysis_status == AssetAnalysisStatus.PROCESSING for asset in conversion.assets):
+        raise HTTPException(status_code=409, detail="Görsel işlemleri tamamlanmadan yayınlanamaz.")
+    if any(asset.table_repair_required and asset.inclusion_status == "pending" for asset in conversion.assets):
+        raise HTTPException(status_code=409, detail="Yeniden çıkarılan tabloları kabul edin veya özgün tabloyu korumayı seçin.")
     if not conversion.markdown_path:
         raise HTTPException(status_code=409, detail="Markdown dosyası bulunamadı.")
     try:
         markdown = Path(conversion.markdown_path).read_text(encoding="utf-8")
+        quality_path = Path(document.source_path + ".quality.json")
+        quality = json.loads(quality_path.read_text(encoding="utf-8")) if quality_path.exists() else {}
+        if formula_review_required(quality, markdown) and not request.accept_formula_warnings:
+            raise HTTPException(status_code=409, detail="Doğrulanamayan veya düzenlenen formülleri kaynakla inceleyip formül uyarılarını kabul edin.")
+        if request.accept_formula_warnings:
+            if request.expected_markdown_hash != conversion.markdown_hash:
+                raise HTTPException(status_code=409, detail="Markdown sürümü değişti. Güncel formülleri inceleyip yeniden onaylayın.")
+            conversion.formula_review_hash = conversion.markdown_hash
         parsed_sections = parse_document_for_embedding(markdown, ".md")
     except (OSError, ValueError) as error:
         raise HTTPException(status_code=422, detail="Markdown konu analizine hazırlanamadı.") from error
@@ -2439,9 +2653,13 @@ def get_document_analysis(document_id: UUID, database: Session = Depends(get_db)
 
 def remove_documents(database: Session, documents: list[SourceDocument]) -> None:
     """Silme işleminin SQL ve Qdrant tarafını tek bir akışta tutar."""
+    if database.scalar(select(DocumentIndexJob).where(DocumentIndexJob.document_id.in_([d.id for d in documents]), DocumentIndexJob.status.in_(BUSY))):
+        raise HTTPException(status_code=409, detail="İndeks yenilemesi sürerken doküman kaldırılamaz.")
     source_paths = [Path(document.source_path) for document in documents]
     converted_paths: list[Path] = []
     for document in documents:
+        converted_paths.extend(Path(document.source_path + suffix) for suffix in (".structure.json", ".quality.json"))
+        converted_paths.extend(Path(document.source_path + ".pages").glob("page-*.png"))
         conversion = database.scalar(select(DocumentConversion).where(DocumentConversion.document_id == document.id))
         if conversion is not None:
             if conversion.markdown_path:
@@ -2745,11 +2963,19 @@ async def index_approved_document(document_id: UUID) -> None:
                 assignment.section.content_type = assignment.content_type
                 database.add(TopicSource(topic_id=target_topic.id, section_id=assignment.section_id, relevance=85, approved=True))
         database.flush()
+        def context_progress(done, total):
+            analysis.stage = "contextualizing"
+            analysis.progress = 35 + int(20 * done / max(1, total))
+            analysis.message = f"Arama bağlamı hazırlanıyor: {done}/{total}. Kaynak metni korunuyor."
+            database.commit()
+
+        if document.contextual_enrichment:
+            context_progress(0, len(document.sections))
+        await enrich_document(database, document, context_progress)
         analysis.stage = "vectorizing"
         analysis.progress = 60
-        analysis.message = "Bölümler embedding'e dönüştürülüyor ve Qdrant'a yazılıyor."
+        analysis.message = "Embedding oluşturuluyor ve Qdrant'a yazılıyor."
         database.commit()
-
         index_document(database, document)
         if previous:
             previous.status = DocumentStatus.REPLACED
@@ -2759,6 +2985,11 @@ async def index_approved_document(document_id: UUID) -> None:
         analysis.stage = "completed"
         analysis.progress = 100
         analysis.message = "Konular indekslendi; kaynak öğrenmeye hazır."
+        if document.contextual_enrichment:
+            sections = list(database.scalars(select(DocumentSection).where(DocumentSection.document_id == document.id)))
+            used = sum(bool((s.search_context_metadata or {}).get("used_in_embedding")) for s in sections)
+            failed = sum((s.search_context_metadata or {}).get("status") == "failed" for s in sections)
+            analysis.message += f" Arama bağlamı: {used}/{len(sections)} parçada kullanıldı; {failed} üretim hatası. Diğer parçalar özgün içerikle indekslendi."
         analysis.error_message = None
         analysis.approval_payload = None
         analysis.approved_at = datetime.now(timezone.utc)
@@ -2828,6 +3059,7 @@ def approve_document_analysis(
             detail="Bu ders adıyla mevcut kaynaklar var. Birleştirme onayı gereklidir.",
         )
     document.lesson_title = lesson_title[:255]
+    document.contextual_enrichment = request.contextual_enrichment
 
     analysis.status = AnalysisStatus.PROCESSING
     analysis.stage = "approval_queued"
@@ -2996,35 +3228,86 @@ async def upload_document(
 
 
 @app.post("/api/documents/{document_id}/reindex", response_model=UploadResponse)
-def reindex_document(document_id: UUID, database: Session = Depends(get_db)) -> UploadResponse:
+async def reindex_document(document_id: UUID, request: ReindexRequest | None = None, database: Session = Depends(get_db)) -> UploadResponse:
     document = database.get(SourceDocument, document_id)
     if document is None or document.status != DocumentStatus.ACTIVE:
         raise HTTPException(status_code=404, detail="Aktif doküman bulunamadı.")
+    with queue_lock:
+        try:
+            job = reserve_job(database, document, document.contextual_enrichment if request is None or request.contextual_enrichment is None else request.contextual_enrichment, status="running")
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     try:
+        if request and request.contextual_enrichment is not None:
+            document.contextual_enrichment = request.contextual_enrichment
+        await enrich_document(database, document, flush=False)
         section_count = index_document(database, document)
+        job.status, job.stage, job.progress, job.message = "completed", "completed", 100, "İndeks yenilendi; kaynak korundu."
         database.commit()
         database.refresh(document)
-    except (EmbeddingUnavailableError, VectorStoreUnavailableError, ValueError) as error:
+    except Exception as error:
         database.rollback()
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        job.status, job.stage, job.message = "failed", "failed", "İndeks yenilenemedi; önceki SQL ayarı korundu."
+        database.add(ApplicationErrorEvent(request_id=str(uuid4()), method="POST", path=f"/api/documents/{document_id}/reindex",
+            error_type=type(error).__name__[:128], summary="Yeniden indeksleme tamamlanamadı; SQL geri alındı."))
+        database.commit()
+        raise HTTPException(status_code=503, detail=job.message) from error
 
     return UploadResponse(action="reindexed", document=serialize_document(document), section_count=section_count)
 
 
 @app.post("/api/documents/{document_id}/rechunk-reindex", response_model=UploadResponse)
-def rechunk_and_reindex_document(document_id: UUID, database: Session = Depends(get_db)) -> UploadResponse:
+async def rechunk_and_reindex_document(document_id: UUID, database: Session = Depends(get_db)) -> UploadResponse:
     """Önceki sürümlerde karaktere göre oluşturulmuş kaynakları token güvenli biçimde yeniler."""
     document = database.get(SourceDocument, document_id)
     if document is None or document.status != DocumentStatus.ACTIVE:
         raise HTTPException(status_code=404, detail="Aktif doküman bulunamadı.")
+    with queue_lock:
+        try:
+            job = reserve_job(database, document, document.contextual_enrichment, status="running")
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     try:
+        old_ids = list(database.scalars(select(DocumentSection.id).where(DocumentSection.document_id == document.id)))
         changed, section_count = rechunk_document_sections(database, document)
-        if changed:
-            remove_document_vectors(document)
+        await enrich_document(database, document)
         section_count = index_document(database, document)
+        job.status, job.stage, job.progress, job.message = "completed", "completed", 100, "Bölümler ve arama bağlamı yenilendi."
         database.commit()
         database.refresh(document)
-    except (EmbeddingUnavailableError, VectorStoreUnavailableError, ValueError) as error:
+    except Exception as error:
         database.rollback()
-        raise HTTPException(status_code=503, detail=str(error)) from error
+        job.status, job.stage, job.message = "failed", "failed", "Bölümler yenilenemedi; kaynak korundu."
+        database.add(ApplicationErrorEvent(request_id=str(uuid4()), method="POST", path=f"/api/documents/{document_id}/rechunk-reindex",
+            error_type=type(error).__name__[:128], summary="Yeniden parçalama tamamlanamadı; SQL geri alındı."))
+        database.commit()
+        raise HTTPException(status_code=503, detail=job.message) from error
+    if changed:
+        try:
+            get_vector_store().delete_sections(old_ids)
+        except VectorStoreUnavailableError:
+            # /api/search SQL'de olmayan eski bölüm kimliklerini zaten eler.
+            pass
     return UploadResponse(action="reindexed", document=serialize_document(document), section_count=section_count)
+
+
+@app.post("/api/documents/{document_id}/index-job", response_model=DocumentIndexJobResponse, status_code=202)
+def start_document_index_job(document_id: UUID, request: ReindexRequest, background_tasks: BackgroundTasks,
+                             database: Session = Depends(get_db)):
+    with queue_lock:
+        document = database.get(SourceDocument, document_id)
+        if document is None or document.status != DocumentStatus.ACTIVE:
+            raise HTTPException(status_code=404, detail="Aktif doküman bulunamadı.")
+        try:
+            job = reserve_job(database, document, document.contextual_enrichment if request.contextual_enrichment is None else request.contextual_enrichment)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+    background_tasks.add_task(run_index_job, document_id)
+    return job
+
+
+@app.get("/api/documents/{document_id}/index-job", response_model=DocumentIndexJobResponse | None)
+def get_document_index_job(document_id: UUID, database: Session = Depends(get_db)):
+    if database.get(SourceDocument, document_id) is None:
+        raise HTTPException(status_code=404, detail="Doküman bulunamadı.")
+    return database.get(DocumentIndexJob, document_id)

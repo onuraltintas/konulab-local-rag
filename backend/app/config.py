@@ -18,15 +18,14 @@ class Settings(BaseSettings):
     embedding_batch_size: int = 16
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3.8:27b"
-    # Görsel açıklaması yalnızca kullanıcı isteğiyle çalışır. Metin/RAG ve
-    # sohbet görevleri varsayılan Qwen modelinde kalır.
+    # Şüpheli tablolar otomatik, diğer görseller kullanıcı isteğiyle incelenir.
+    # Metin/RAG ve sohbet görevleri varsayılan Qwen modelinde kalır.
     # Yerelde kurulu Qwen sürümü Ollama'nın vision yeteneğini bildirir;
     # gemma4:31b metin odaklı kurulumlarda bu yeteneği bildirmeyebilir.
     vision_model: str = "qwen3.8:27b"
     ollama_context_length: int = 32_768
     ollama_think: bool = False
     document_analysis_max_tokens: int = 3_500
-    seed_default_topics: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

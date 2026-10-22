@@ -149,6 +149,7 @@ async def complete(
     json_mode: bool = False,
     think: bool = False,
     image: bytes | None = None,
+    read_timeout: float = 300,
 ) -> str:
     provider = config.text_provider if model is None else config.vision_provider
     selected_model = model or config.text_model
@@ -183,7 +184,7 @@ async def complete(
             payload["response_format"] = {"type": "json_object"}
         endpoint = f"{base_url}/v1/chat/completions"
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=300, write=30, pool=30)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(connect=10, read=read_timeout, write=30, pool=30)) as client:
             response = await client.post(endpoint, json=payload)
             response.raise_for_status()
         body = response.json()

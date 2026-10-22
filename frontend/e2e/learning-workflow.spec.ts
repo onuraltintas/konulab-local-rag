@@ -49,7 +49,7 @@ test('doküman yükleme, onay, öğrenme, quiz ve silme akışı', async ({ page
     if (path === '/api/profiles/bootstrap') return json({ id: profileId, client_id: 'e2e-client', display_name: 'E2E öğrenci', created_at: null, updated_at: null, progress: {} });
     if (path === '/api/topics') return json([topic]);
     if (path === '/api/documents' && method === 'GET') return json(documentVisible ? [{ ...document, status: approved ? 'active' : 'processing' }] : []);
-    if (path === '/api/topics/1/study') return json([{ id: 'step-1', section_ids: [sectionId], source_name: 'E2E Test Dersi', heading: 'Temel kavram', content: 'Öğrenme adımının kaynak metni.', content_type: 'explanation', line_start: 1, line_end: 4 }]);
+    if (path === '/api/topics/1/study') return json([{ id: 'step-1', section_ids: [sectionId], source_name: 'E2E Test Dersi', heading: 'Temel kavram', content: 'Bayes: $$P(A|B)=\\frac{P(B|A)P(A)}{P(B)}$$\nKod: `x = $y$`\n<script>window.injected=true</script>', content_type: 'explanation', line_start: 1, line_end: 4 }]);
     if (path === '/api/topics/1/prerequisites') return json([]);
     if (path === '/api/documents/analyze' && method === 'POST') {
       documentVisible = true;
@@ -58,6 +58,7 @@ test('doküman yükleme, onay, öğrenme, quiz ve silme akışı', async ({ page
     if (path === `/api/documents/${documentId}/analysis`) return json(approved ? { ...readyAnalysis, document: { ...document, status: 'active' }, status: 'approved', stage: 'completed', progress: 100, message: 'Konular indekslendi; kaynak öğrenmeye hazır.', topics: [] } : readyAnalysis);
     if (path === `/api/documents/${documentId}/lesson-merge-preview`) return json({ lesson_title: 'E2E Test Dersi', matching_documents: [], overlapping_topics: [] });
     if (path === `/api/documents/${documentId}/approve-analysis` && method === 'POST') {
+      expect(request.postDataJSON().contextual_enrichment).toBe(true);
       approved = true;
       return json({ ...readyAnalysis, document: { ...document, status: 'active' }, status: 'approved', stage: 'completed', progress: 100, message: 'Konular indekslendi; kaynak öğrenmeye hazır.', topics: [] }, 202);
     }
@@ -78,11 +79,18 @@ test('doküman yükleme, onay, öğrenme, quiz ve silme akışı', async ({ page
   await expect(page.getByText('1 doküman incelemeye hazır.')).toBeVisible();
   await page.locator('button.document-toggle').click();
   await page.getByRole('button', { name: 'İncele ve onayla' }).click();
+  const enrichment = page.getByRole('checkbox', { name: /Yapay zekâ ile arama bağlamını zenginleştir/ });
+  await expect(enrichment).not.toBeChecked();
+  await enrichment.check();
   await page.getByRole('button', { name: 'İncelemeyi onayla ve indekslemeye devam et' }).click();
   await expect(page.getByText('Kaynak indekslendi. Öğrenme haritasından konuları açabilir')).toBeVisible();
 
   await page.goto('/harita');
   await expect(page.getByText('Temel kavram')).toBeVisible();
+  await expect(page.locator('.study-content .katex')).toHaveCount(1);
+  await expect(page.locator('.study-content .katex-mathml')).toBeAttached();
+  await expect(page.locator('.study-content code')).toHaveText('`x = $y$`');
+  await expect(page.locator('.study-content script')).toHaveCount(0);
   await page.getByRole('tab', { name: 'Mini quiz' }).click();
   await page.getByRole('button', { name: 'Mini quiz başlat' }).click();
   await page.locator('.quiz-question').getByRole('button', { name: /Doğru yanıt/ }).click();
@@ -90,7 +98,7 @@ test('doküman yükleme, onay, öğrenme, quiz ve silme akışı', async ({ page
   await expect(page.getByText('Harika! Tüm quiz sorularını doğru yanıtladın.')).toBeVisible();
 
   await page.goto('/kaynaklar');
-  await page.locator('button.delete-document').first().click();
+  await page.getByRole('button', { name: 'Kaldır', exact: true }).click();
   await expect(page.getByText('Etkilenen konular: 1 — Test Konusu')).toBeVisible();
   await page.getByRole('button', { name: 'Evet, kaldır' }).click();
   await expect(page.getByText('Henüz aktif doküman yok. İlk ders notunu ekleyerek başlayın.')).toBeVisible();
@@ -103,6 +111,7 @@ test('kaynaklı özet aynı özet sekmesinde kalır', async ({ page }) => {
     const path = new URL(request.url()).pathname;
     const json = (body: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
     if (path === '/api/profiles/bootstrap') return json({ id: profileId, client_id: 'summary-client', display_name: 'Özet öğrencisi', created_at: null, updated_at: null, progress: {} });
+    if (path === '/api/documents') return json([]);
     if (path === '/api/topics') return json([topic]);
     if (path === '/api/topics/1/study') return json([{ id: 'step-1', section_ids: [sectionId], source_name: 'E2E Test Dersi', heading: 'Temel kavram', content: 'Öğrenme adımının kaynak metni.', content_type: 'explanation', line_start: 1, line_end: 4 }]);
     if (path === '/api/topics/1/prerequisites') return json([]);
@@ -119,6 +128,7 @@ test('kaynaklı özet aynı özet sekmesinde kalır', async ({ page }) => {
   });
 
   await page.goto('/harita');
+  await expect(page.getByText('Temel kavram')).toBeVisible();
   await page.getByRole('tab', { name: 'Özet' }).click();
   await page.getByRole('button', { name: 'Kaynaklı özet oluştur' }).click();
 

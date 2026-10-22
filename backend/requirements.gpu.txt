@@ -4,6 +4,7 @@ fastapi>=0.115,<1.0
 # GPU imajındaki Torch/CUDA sürümünü değiştirmemesi için Dockerfile'daki NVIDIA
 # constraint dosyasıyla birlikte kurulur.
 docling>=2.60,<3.0
+fonttools>=4,<5
 fastembed>=0.5,<1.0
 httpx>=0.28,<1.0
 pydantic-settings>=2.6,<3.0

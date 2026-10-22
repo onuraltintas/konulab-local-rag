@@ -59,15 +59,6 @@ class LLMProviderType(str, enum.Enum):
     VLLM = "vllm"
 
 
-class Lesson(Base):
-    __tablename__ = "lessons"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    number: Mapped[int] = mapped_column(unique=True, index=True)
-    title: Mapped[str] = mapped_column(String(255))
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-
 class RuntimeModelSettings(Base):
     """Tek makinedeki sistem-geneli model seçimi.
 
@@ -130,6 +121,7 @@ class SourceDocument(Base):
     # Kaynak dosyasının adı korunur; kullanıcıya gösterilen ders adı ise analiz
     # sonrasında onaylanan bu ayrı alanda tutulur.
     lesson_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contextual_enrichment: Mapped[bool] = mapped_column(default=False)
     source_path: Mapped[str] = mapped_column(String(1024))
     media_type: Mapped[str] = mapped_column(String(100))
     content_hash: Mapped[str] = mapped_column(String(64))
@@ -150,6 +142,19 @@ class SourceDocument(Base):
     conversion: Mapped["DocumentConversion | None"] = relationship(
         back_populates="document", cascade="all, delete-orphan", uselist=False
     )
+    index_job: Mapped["DocumentIndexJob | None"] = relationship(cascade="all, delete-orphan", uselist=False)
+
+
+class DocumentIndexJob(Base):
+    __tablename__ = "document_index_jobs"
+
+    document_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("source_documents.id"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    stage: Mapped[str] = mapped_column(String(32), default="queued")
+    progress: Mapped[int] = mapped_column(default=0)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contextual_enrichment: Mapped[bool] = mapped_column(default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class DocumentConversion(Base):
@@ -166,6 +171,7 @@ class DocumentConversion(Base):
     )
     markdown_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     markdown_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    formula_review_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     converter: Mapped[str | None] = mapped_column(String(128), nullable=True)
     converter_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ocr_used: Mapped[bool] = mapped_column(default=False)
@@ -219,6 +225,10 @@ class DocumentAsset(Base):
     asset_path: Mapped[str] = mapped_column(String(1024))
     content_hash: Mapped[str] = mapped_column(String(64))
     structured_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    table_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    table_repair_required: Mapped[bool] = mapped_column(default=False)
+    proposed_table: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    table_validation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     column_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -247,6 +257,8 @@ class DocumentSection(Base):
     )
     heading_path: Mapped[str] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
+    search_context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    search_context_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     content_type: Mapped[str] = mapped_column(String(32), default="explanation")
     sequence: Mapped[int] = mapped_column(Integer)
     line_start: Mapped[int] = mapped_column(Integer)

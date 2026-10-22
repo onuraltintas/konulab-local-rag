@@ -1,9 +1,9 @@
 """KonuLab'ın kaynaklı yanıt kalitesini tekrarlanabilir bir soru setinde ölçer.
 
 Çalıştırma (GPU API konteyneri içinde):
-    python scripts/evaluate_answer_quality.py
-    python scripts/evaluate_answer_quality.py --limit 1
-    python scripts/evaluate_answer_quality.py --skip-judge
+    python scripts/evaluate_answer_quality.py --benchmark /inputs/questions.json
+    python scripts/evaluate_answer_quality.py --benchmark /inputs/questions.json --limit 1
+    python scripts/evaluate_answer_quality.py --benchmark /inputs/questions.json --skip-judge
 
 Rapor üç ayrı sinyal üretir:
 1. retrieval_hit: beklenen ders ifadesi en az bir seçilen kaynakta mı?
@@ -29,7 +29,6 @@ from app.quality import inspect_citations
 from app.schemas import SearchResult
 
 
-BENCHMARK_PATH = Path(__file__).parents[1] / "evals" / "answer_quality_benchmark.json"
 SOURCE_LIMIT = 6
 
 
@@ -97,10 +96,9 @@ async def calibrate_judge(
     if topic_id is None:
         raise RuntimeError(f"Kalibrasyon konusu bulunamadı: {case['topic']}")
     sources = await retrieve_sources(client, api_url, str(case["query"]), topic_id)
-    deliberately_wrong = (
-        "Düzenli ifadeler yalnızca görsel dosyaları düzenlemek için kullanılır; metin arama veya "
-        "ayrıştırma ile ilişkileri yoktur. Bu nedenle metin ön işleme sürecinde kullanılmazlar [K1]."
-    )
+    deliberately_wrong = case.get("negative_answer")
+    if not isinstance(deliberately_wrong, str) or not deliberately_wrong.strip():
+        raise RuntimeError("Kalibrasyon kaydı konuya uygun bir negative_answer içermeli.")
     judgment = await get_ollama_client().evaluate_answer(str(case["query"]), sources, deliberately_wrong)
     detected = judgment["verdict"] != "pass" or int(judgment["groundedness"]) <= 1
     return {"detected": detected, "judge": judgment}
@@ -108,6 +106,7 @@ async def calibrate_judge(
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--benchmark", type=Path, required=True, help="Kullanıcı tarafından sağlanan soru/yanıt değerlendirme kümesi")
     parser.add_argument("--limit", type=int, default=None, help="Koşulacak ilk benchmark soru sayısı")
     parser.add_argument("--skip-judge", action="store_true", help="Yalnızca retrieval ve atıf kontrollerini çalıştır")
     parser.add_argument("--judge-calibration-only", action="store_true", help="Yalnızca kasıtlı yanlış yanıt denetimini çalıştır")
@@ -115,7 +114,9 @@ async def main() -> None:
     parser.add_argument("--api-url", default="http://127.0.0.1:8000", help="Çalışan KonuLab API adresi")
     args = parser.parse_args()
 
-    cases = json.loads(BENCHMARK_PATH.read_text(encoding="utf-8"))
+    cases = json.loads(args.benchmark.read_text(encoding="utf-8"))
+    if not isinstance(cases, list):
+        raise RuntimeError("Benchmark JSON listesi olmalı.")
     if args.limit is not None:
         cases = cases[: max(args.limit, 0)]
     if not cases:

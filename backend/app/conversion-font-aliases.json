@@ -1,0 +1,6 @@
+{
+  "e6d753df6175f002b38cb87d7656763fd66abf76a48edf72408ac03813e28490": {
+    "aliases": {"\uf0f5": "ı"},
+    "evidence": "Embedded TimesNewRoman subset; dotless-i glyph visually verified against the source PDF. Applies only to this exact font SHA-256, regardless of document name."
+  }
+}

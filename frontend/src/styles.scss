@@ -1,4 +1,13 @@
+@import 'katex/dist/katex.min.css';
 * { box-sizing: border-box; }
+[mathText] { white-space: pre-wrap; overflow-wrap: anywhere; }
+[mathText] .katex-display { overflow-x: auto; overflow-y: hidden; padding: 8px 0; }
+.formula-review { margin: 16px 0; padding: 16px; border: 1px solid #cbded5; border-radius: 12px; }
+.formula-review details { padding: 12px 0; border-bottom: 1px solid #e1e9e4; }
+.formula-review summary { cursor: pointer; font-weight: 600; }
+.formula-review img { display: block; max-width: 100%; max-height: 300px; object-fit: contain; margin: 12px 0; }
+.document-index-settings { padding: 16px; margin-bottom: 16px; border: 1px solid #cbded5; border-radius: 12px; }
+.index-job-status progress { width: min(400px, 85%); accent-color: #007459; margin-right: 10px; }
 
 html { scroll-behavior: smooth; }
 

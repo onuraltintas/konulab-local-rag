@@ -9,6 +9,7 @@ from app.chunking import ParsedSection, split_sections_by_tokens
 from app.embeddings import get_embedder, get_sparse_embedder
 from app.models import DocumentSection, EmbeddingStatus, SectionTopicProposal, SourceDocument, TopicSource
 from app.vector_store import SectionVector, get_vector_store
+from app.contextual_indexing import contextual_passage
 
 
 def table_search_text(content: str) -> str:
@@ -63,6 +64,8 @@ def index_document(database: Session, document: SourceDocument) -> int:
     token_lengths = [len(embedder.tokenizer(passage, add_special_tokens=False).get("input_ids", [])) for passage in passages]
     if any(length > passage_budget for length in token_lengths):
         raise ValueError("Kaynak parçası embedding token bütçesini aşıyor; yeniden parçalanmalı.")
+    passages = [contextual_passage(passage, section, document, embedder)
+                for passage, section in zip(passages, sections, strict=True)]
     embeddings = embedder.embed_passages(passages)
     sparse_embeddings = get_sparse_embedder().embed_passages(passages)
     vectors = [

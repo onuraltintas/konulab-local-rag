@@ -27,8 +27,11 @@ RUN python -m pip install --no-cache-dir \
     --constraint /etc/pip/constraint.txt \
     -r requirements.gpu.txt
 
+# Bağımsız metin çıkarımı, sorunlu font/kelime aralıklarını karşılaştırır.
+RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
+        tesseract-ocr tesseract-ocr-tur tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
 COPY app ./app
-COPY evals ./evals
 COPY scripts ./scripts
 
 ENV PYTHONUNBUFFERED=1 \

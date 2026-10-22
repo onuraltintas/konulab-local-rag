@@ -133,7 +133,7 @@
                   <span>{{ section.heading_path }}</span>
                   <small>Satır {{ section.line_start }}–{{ section.line_end }}</small>
                 </div>
-                <pre>{{ section.content }}</pre>
+                <pre [mathText]="section.content"></pre>
               </article>
             }
           </div>
@@ -373,7 +373,7 @@
                 @else if (currentTopicProgress().reviewCount) { <small>{{ currentTopicProgress().reviewCount }} adım planlı tekrar bekliyor.</small> }
               </section>
               <div class="study-source"><span>{{ step.source_name }} · satır {{ step.line_start }}–{{ step.line_end }}</span><button type="button" class="text-action" (click)="openSource(step.section_ids[0])">Kaynakta göster</button></div>
-              <article class="study-content" [class.code]="step.content_type === 'code'">{{ step.content }}</article>
+              <article class="study-content" [class.code]="step.content_type === 'code'" [mathText]="step.content" [mathCode]="step.content_type === 'code'"></article>
               <div class="study-actions">
                 <div class="study-navigation" aria-label="Öğrenme adımı gezinme">
                   <button type="button" class="secondary-action" [disabled]="studyStepIndex() === 0" (click)="moveStudyStep(-1)">← Önceki</button>
@@ -392,7 +392,7 @@
               @if (stepAssistantResponse(); as assistantResponse) {
                 <article class="step-assistant" aria-live="polite">
                   <p class="eyebrow">Adım asistanı · {{ assistantResponse.model }}</p>
-                  <p>{{ assistantResponse.answer }}</p>
+                  <p [mathText]="assistantResponse.answer"></p>
                   <div class="citation-list">
                     @for (source of assistantResponse.sources; track source.index) {
                       <div class="citation-item" [class.weak]="isWeakSource(source)">
@@ -423,7 +423,7 @@
             @if (summaryResponse(); as summary) {
               <article class="step-assistant summary-answer" aria-live="polite">
                 <p class="eyebrow">Kaynaklı özet · {{ summary.model }}</p>
-                <p>{{ summary.answer }}</p>
+                <p [mathText]="summary.answer"></p>
                 <div class="citation-list">
                   @for (source of summary.sources; track source.index) {
                     <div class="citation-item" [class.weak]="isWeakSource(source)">
@@ -458,11 +458,11 @@
                 @for (question of currentQuiz.questions; track question.id; let position = $index) {
                   <article class="quiz-question" [class.answered]="quizSubmitted()" [class.correct]="quizSubmitted() && quizAnswer(question.id) === question.correct_option_id" [class.incorrect]="quizSubmitted() && quizAnswer(question.id) !== question.correct_option_id">
                     <p class="quiz-number">Soru {{ position + 1 }}</p>
-                    <h4>{{ question.question }}</h4>
+                    <h4 [mathText]="question.question"></h4>
                     <div class="quiz-options" role="radiogroup" [attr.aria-label]="'Soru ' + (position + 1)">
                       @for (option of question.options; track option.id) {
                         <button type="button" [attr.aria-pressed]="quizAnswer(question.id) === option.id" [class.selected]="quizAnswer(question.id) === option.id" [class.correct-option]="quizSubmitted() && option.id === question.correct_option_id" [class.wrong-option]="quizSubmitted() && quizAnswer(question.id) === option.id && option.id !== question.correct_option_id" [disabled]="quizSubmitted()" (click)="selectQuizAnswer(question.id, option.id)">
-                          <strong>{{ option.id }}</strong><span class="quiz-option-text">{{ option.text }}</span>
+                          <strong>{{ option.id }}</strong><span class="quiz-option-text" [mathText]="option.text"></span>
                           @if (!quizSubmitted() && quizAnswer(question.id) === option.id) { <span class="quiz-choice-state selected">✓ Seçildi</span> }
                           @if (quizSubmitted() && option.id === question.correct_option_id) { <span class="quiz-choice-state correct">✓ Doğru cevap</span> }
                           @else if (quizSubmitted() && quizAnswer(question.id) === option.id) { <span class="quiz-choice-state wrong">Senin cevabın</span> }
@@ -472,7 +472,7 @@
                     @if (quizSubmitted()) {
                       <div class="quiz-feedback">
                         <strong>{{ quizAnswer(question.id) === question.correct_option_id ? 'Doğru' : 'Tekrar et' }}</strong>
-                        <p>{{ question.explanation }}</p>
+                        <p [mathText]="question.explanation"></p>
                         @if (quizRelatedStep(question.related_step_id); as sourceStep) {
                           <div class="study-source">
                             <span>İlgili kaynak: {{ sourceStep.source_name }} · {{ sourceStep.heading }} · satır {{ sourceStep.line_start }}–{{ sourceStep.line_end }}</span>
@@ -531,7 +531,7 @@
                 @for (message of currentConversation.messages; track message.id) {
                   <article class="chat-message" [class.assistant]="message.role === 'assistant'">
                     <p class="model-label">{{ message.role === 'user' ? 'Sen' : message.model }}</p>
-                    <p>{{ message.content }}</p>
+                    <p [mathText]="message.content"></p>
                     @if (message.sources.length) {
                       <div class="citation-list">
                         @for (source of message.sources; track source.index) {
@@ -548,7 +548,7 @@
             } @else {
               <article class="chat-answer">
                 <p class="model-label">{{ response.model }}</p>
-                <p>{{ response.answer }}</p>
+                <p [mathText]="response.answer"></p>
                 <div class="citation-list">
                   @for (source of response.sources; track source.index) {
                     <div class="citation-item" [class.weak]="isWeakSource(source)">
@@ -652,44 +652,128 @@
           {{ conversion.page_count ?? '—' }} sayfa · {{ conversion.table_count }} tablo · {{ conversion.image_count }} görsel
           @if (conversion.ocr_used) { · OCR kullanıldı }
         </p>
+          @if (conversion.quality_report?.issues && conversion.quality_report; as quality) {
+            <details class="asset-table-structure">
+              <summary>Dönüşüm kalite raporu · {{ quality.requires_review ? 'İnceleme gerekli' : 'Otomatik denetim tamamlandı' }}</summary>
+              <p>Doğrulanmış karakter düzeltmesi: {{ quality.corrected_font_characters ?? 0 }}. Bu kontrol, kaynakla tam doğruluk garantisi vermez.</p>
+              <p>ZIP paketinde {{ quality.source_page_count ?? 0 }} özgün sayfa görünümü bulunur. Ayrı görsel olarak algılanmayan içerikler bu sayfalardan incelenebilir.</p>
+              @for (issue of quality.issues ?? []; track $index) {
+                <p>{{ issue.pages?.length ? 'Sayfa ' + issue.pages?.join(', ') + ': ' : '' }}{{ issue.type === 'font_mapping' ? 'Font karakter eşlemesi kontrol edilmeli.' : issue.type === 'suspicious_spacing' ? 'Kelime aralıkları kontrol edilmeli.' : issue.type === 'asset_coverage' ? 'Görsel/tablo kapsamı eksik.' : issue.type === 'formula_not_decoded' ? 'Formül okunamadı; özgün PDF ile karşılaştırın.' : 'Kaynakla karşılaştırma gerekli.' }} {{ issue.text }}</p>
+              }
+            </details>
+          }
         @if (conversion.assets.length) {
           <section class="conversion-assets" aria-label="Dönüşümden alınan tablo ve görseller">
-            <h4>Korunan görseller</h4>
+            <h4>Korunan görseller ve tablolar</h4>
             <p class="asset-intro">Yalnızca seçtiğiniz tablo veya diyagram yerel görsel model ile açıklanır. Açıklama Markdown’a eklenir ve yayınlamadan önce burada görünür.</p>
             <button type="button" class="text-action" [disabled]="visualAnalysisLoading() || markdownEditing() || hasVisualAnalysisInProgress(conversion)" (click)="analyzeAllConversionAssets()">Tüm görselleri sırayla açıkla</button>
             <button type="button" class="text-action" [disabled]="!selectedAssetIds().length || visualAnalysisLoading() || markdownEditing() || hasVisualAnalysisInProgress(conversion)" (click)="analyzeSelectedConversionAssets()">Seçilenleri açıkla ({{ selectedAssetIds().length }})</button>
             <button type="button" class="text-action" [disabled]="hasVisualAnalysisInProgress(conversion)" (click)="acceptAllConversionAssets()">Hazır açıklamaların tümünü kabul et</button>
             <p class="asset-intro">{{ visualProgress(conversion) }}</p>
-            <div>
-              @for (asset of conversion.assets; track asset.id) {
-                <figure>
-                  <img [src]="documentAssetUrl(asset)" [alt]="(asset.page_number ? asset.page_number + '. sayfa ' : '') + asset.kind">
-                  <figcaption>
-                    <label><input type="checkbox" [checked]="isConversionAssetSelected(asset.id)" (change)="toggleConversionAsset(asset.id, $any($event.target).checked)"> Seç</label>
-                    <strong>{{ asset.page_number ? asset.page_number + '. sayfa · ' : '' }}{{ asset.kind === 'table' ? 'Tablo' : 'Görsel' }}</strong>
-                    @if (asset.analysis_status === 'pending' || asset.analysis_status === 'failed') {
-                      <button type="button" class="text-action asset-analysis-action" [disabled]="visualAnalysisLoading() || markdownEditing()" (click)="analyzeConversionAsset(asset)">
-                        {{ asset.analysis_status === 'failed' ? 'Tekrar açıkla' : 'Görsel model ile açıkla' }}
-                      </button>
-                    } @else if (asset.analysis_status === 'processing') {
-                      <span class="asset-status">Görsel model açıklıyor…</span>
-                    } @else if (asset.analysis_status === 'ready') {
-                      <span class="asset-status ready">Açıklama hazır · {{ asset.confidence }}%</span>
-                    }
-                    @if (asset.description) { <p>{{ asset.description }}</p> }
-                    @if (asset.analysis_status === 'ready') {
-                      <div class="asset-decision"><button type="button" class="text-action" (click)="decideConversionAsset(asset, 'accepted')">{{ asset.inclusion_status === 'accepted' ? 'Markdown’da kabul edildi' : 'Markdown’a kabul et' }}</button><button type="button" class="text-action" (click)="decideConversionAsset(asset, 'rejected')">{{ asset.inclusion_status === 'rejected' ? 'Çıkarıldı' : 'Çıkar' }}</button></div>
-                    }
-                    @if (asset.structured_markdown) { <details class="asset-table-structure"><summary>{{ asset.row_count ?? '—' }} satır · {{ asset.column_count ?? '—' }} sütun</summary><pre>{{ asset.structured_markdown }}</pre></details> }
-                    @if (asset.needs_review) { <em>Belirsizlik var; görselden doğrulayın.</em> }
-                    @if (asset.error_message) { <em class="asset-error">{{ asset.error_message }}</em> }
-                  </figcaption>
-                </figure>
-              }
+            @if (pendingRepairTables(conversion).length) {
+              <div class="table-repair-review">
+                <p>{{ pendingRepairTables(conversion).length }} şüpheli tablo için kararınız bekleniyor. Öneriyi kaynak görselle karşılaştırıp kabul edin veya özgün tabloyu koruyun.</p>
+                <div class="asset-decision">
+                  @for (table of pendingRepairTables(conversion); track table.id) {
+                    <button type="button" class="secondary-action compact-action" (click)="selectConversionAsset(table.id)">{{ table.page_number }}. sayfa tablosunu incele</button>
+                  }
+                </div>
+              </div>
+            }
+            <div class="asset-selector">
+              <label for="conversion-asset-select">İncelenecek görsel veya tablo</label>
+              <select id="conversion-asset-select" [value]="selectedConversionAssetId() ?? ''" (change)="selectConversionAsset($any($event.target).value)">
+                @for (asset of conversion.assets; track asset.id; let index = $index) {
+                  <option [value]="asset.id">{{ conversionAssetOptionLabel(asset, index) }}</option>
+                }
+              </select>
             </div>
+            @if (selectedConversionAsset(); as asset) {
+              <figure class="conversion-asset-preview">
+                <img [src]="documentAssetUrl(asset)" [alt]="(asset.page_number ? asset.page_number + '. sayfa ' : '') + (asset.kind === 'table' ? 'tablo' : 'görsel') + ' önizlemesi'">
+                <figcaption>
+                  <div class="asset-preview-heading">
+                    <strong>{{ asset.page_number ? asset.page_number + '. sayfa · ' : '' }}{{ asset.kind === 'table' ? 'Tablo' : 'Görsel' }}</strong>
+                    <button type="button" class="secondary-action compact-action asset-download-action" [disabled]="assetDownloadId() !== null" (click)="downloadConversionAsset(conversion, asset)">
+                      {{ assetDownloadId() === asset.id ? 'İndiriliyor…' : asset.kind === 'table' ? 'Seçili tablo görselini indir' : 'Seçili görseli indir' }}
+                    </button>
+                    <label><input type="checkbox" [checked]="isConversionAssetSelected(asset.id)" (change)="toggleConversionAsset(asset.id, $any($event.target).checked)"> Toplu açıklamaya dahil et</label>
+                  </div>
+                  @if (asset.analysis_status === 'pending' || asset.analysis_status === 'failed') {
+                    <button type="button" class="text-action asset-analysis-action" [disabled]="visualAnalysisLoading() || markdownEditing()" (click)="analyzeConversionAsset(asset)">
+                        {{ asset.table_repair_required ? 'Tabloyu görsel modelle yeniden çıkar' : asset.analysis_status === 'failed' ? 'Tekrar açıkla' : 'Görsel model ile açıkla' }}
+                    </button>
+                  } @else if (asset.analysis_status === 'processing') {
+                    <span class="asset-status">{{ asset.table_repair_required ? 'Görsel model tabloyu yeniden çıkarıyor…' : 'Görsel model açıklıyor…' }}</span>
+                  } @else if (asset.analysis_status === 'ready') {
+                    <span class="asset-status ready">{{ asset.table_repair_required ? 'Tablo önerisi hazır' : 'Açıklama hazır' }} · {{ asset.confidence }}%</span>
+                  }
+                  @if (asset.description) { <p>{{ asset.description }}</p> }
+                  @if (asset.table_repair_required) {
+                    <section class="table-repair-review" aria-label="Yeniden çıkarılan tablo incelemesi">
+                      <h4>Görsel modelin tablo önerisi</h4>
+                      @if (asset.table_validation; as validation) {
+                        <p class="asset-status" [class.ready]="validation.status === 'passed'">{{ validation.message }}</p>
+                        <p>Kaynak metin kapsamı: %{{ (validation.word_recall * 100).toFixed(0) }} · Öneri metninin kaynakla eşleşmesi: %{{ (validation.word_precision * 100).toFixed(0) }}</p>
+                        @if (validation.missing_numbers.length || validation.additional_numbers.length) { <p class="asset-error">Sayı eşleşmesi farklı. Kaynak görseliyle karşılaştırın.</p> }
+                      }
+                      @if (asset.proposed_markdown) {
+                        <p>{{ asset.proposed_table?.rows }} satır · {{ asset.proposed_table?.columns }} sütun. Öneri, kabul etmeden önce Markdown’a uygulanmaz.</p>
+                        <pre class="table-repair-proposal">{{ asset.proposed_markdown }}</pre>
+                      }
+                      @if (asset.proposed_table?.refinement; as refinement) {
+                        <details class="asset-table-structure">
+                          <summary>Yüksek çözünürlüklü kontrol · {{ refinement.cells.length }} şüpheli okuma incelendi</summary>
+                          @for (cell of refinement.cells; track $index) {
+                            <p>{{ cell.row + 1 }}. satır / {{ cell.column + 1 }}. sütun · {{ cell.dpi }} DPI · {{ cell.before }} → {{ cell.accepted ? cell.after : 'Doğrulanamadı; özgün öneri korundu' }}</p>
+                            @if (cell.accepted) { <p>{{ cell.verification_method === 'pdf_text+turkish_ocr' ? 'PDF metni ve bağımsız Türkçe OCR ile doğrulandı.' : 'PDF metni ve görsel model ile doğrulandı.' }}</p> }
+                          }
+                          @for (text of refinement.context_added; track text) { <p>Korunan tablo bağlamı: {{ text }}</p> }
+                          @for (issue of refinement.structure_review?.issues ?? []; track issue) { <p class="asset-error">{{ issue }}</p> }
+                          @for (error of refinement.errors; track error) { <p class="asset-error">{{ error }}</p> }
+                          @if (refinement.unresolved_words?.length) { <p class="asset-error">Hâlâ doğrulanamayan sözcükler: {{ refinement.unresolved_words?.join(', ') }}</p> }
+                        </details>
+                      }
+                      <div class="asset-decision">
+                        @if (asset.analysis_status === 'ready') {
+                          <button type="button" class="secondary-action compact-action" [disabled]="visualAnalysisLoading() || markdownEditing()" (click)="analyzeConversionAsset(asset, true)">Şüpheli hücreleri yüksek çözünürlükte kontrol et</button>
+                          <button type="button" class="secondary-action compact-action" [disabled]="visualAnalysisLoading() || markdownEditing()" (click)="analyzeConversionAsset(asset)">Tabloyu yeniden çıkar</button>
+                        }
+                        @if (asset.analysis_status === 'ready' && asset.proposed_table) {
+                          <button type="button" class="primary-action compact-action" (click)="decideConversionAsset(asset, 'accepted')">{{ asset.inclusion_status === 'accepted' ? 'Tablo önerisi kabul edildi' : 'Tabloyu inceledim, öneriyi kabul et' }}</button>
+                        }
+                        <button type="button" class="secondary-action compact-action" [disabled]="asset.analysis_status === 'processing'" (click)="decideConversionAsset(asset, 'rejected')">{{ asset.inclusion_status === 'rejected' ? 'Özgün tablo korunuyor' : 'Özgün tabloyu koru' }}</button>
+                      </div>
+                    </section>
+                  }
+                  @if (asset.analysis_status === 'ready' && !asset.table_repair_required) {
+                    <div class="asset-decision"><button type="button" class="text-action" (click)="decideConversionAsset(asset, 'accepted')">{{ asset.inclusion_status === 'accepted' ? 'Markdown’da kabul edildi' : 'Markdown’a kabul et' }}</button><button type="button" class="text-action" (click)="decideConversionAsset(asset, 'rejected')">{{ asset.inclusion_status === 'rejected' ? 'Çıkarıldı' : 'Çıkar' }}</button></div>
+                  }
+                  @if (asset.structured_markdown) { <details class="asset-table-structure"><summary>{{ asset.row_count ?? '—' }} satır · {{ asset.column_count ?? '—' }} sütun</summary><pre>{{ asset.structured_markdown }}</pre></details> }
+                  @if (asset.needs_review) { <em>Belirsizlik var; görselden doğrulayın.</em> }
+                  @if (asset.error_message) { <em class="asset-error">{{ asset.error_message }}</em> }
+                </figcaption>
+              </figure>
+            }
           </section>
         }
         <section class="markdown-review" aria-label="Markdown inceleme ve sürüm geçmişi">
+          @if (conversion.quality_report?.formulas?.length) {
+            <section class="formula-review" aria-label="Formül kaynak kontrolü">
+              <h4>Formüller ve kaynak karşılaştırması</h4>
+              <p>Bağımsız okuma karşılaştırması yapılır; matematiksel doğruluk ispatı değildir. Uyuşmazlıkta formül otomatik değiştirilmez.</p>
+              @for (formula of conversion.quality_report?.formulas ?? []; track $index) {
+                <details>
+                  <summary>Formül {{ $index + 1 }} · {{ formula.validation?.needs_review === false ? 'Kaynak okumaları uyuşuyor' : 'İnceleme gerekli' }}</summary>
+                  <p [mathText]="'$$' + formula.latex + '$$'"></p>
+                  <p>{{ formula.validation?.reason ?? 'Bağımsız doğrulama bulunmuyor.' }}</p>
+                  <img loading="lazy" [src]="formulaSourceUrl(conversion, $index)" [alt]="'Formül ' + ($index + 1) + ' özgün PDF kırpımı'">
+                  @if (formula.validation?.independent_latex) { <p>Bağımsız okuma:</p><p [mathText]="'$$' + formula.validation?.independent_latex + '$$'"></p> }
+                  @if (formula.validation?.pdf_text?.source_text) { <p>PDF metin kanıtı: {{ formula.validation?.pdf_text?.source_text }}</p> }
+                </details>
+              }
+            </section>
+          }
           <div class="markdown-review-heading">
             <div>
               <h4>Markdown incelemesi</h4>
@@ -706,7 +790,7 @@
               <button type="button" class="secondary-action compact-action" [disabled]="markdownSaving()" (click)="cancelMarkdownEditing()">Vazgeç</button>
             </div>
           } @else {
-            <pre class="markdown-preview">{{ conversion.markdown }}</pre>
+            <pre class="markdown-preview" [mathText]="conversion.markdown"></pre>
           }
           @if (conversion.revisions.length > 1) {
             <details class="markdown-history">
@@ -725,12 +809,24 @@
           }
         </section>
         <p class="analysis-intro">Bu onay Markdown’ın mevcut konu analizi akışına girmesine izin verir; henüz Qdrant’a indekslenmez.</p>
+        @if (conversion.formula_review_required) {
+          <label class="enrichment-option">
+            <input type="checkbox" [checked]="formulaWarningsAccepted(conversion)" (change)="acceptFormulaWarnings(conversion, $any($event.target).checked)">
+            <span><strong>Formül uyarılarını kaynakla inceledim</strong><small>Doğrulanamayan veya sonradan düzenlenen formülleri kontrol ettim; bu Markdown sürümüyle devam etmeyi onaylıyorum. Gerekirse önce Markdown’ı düzenleyin.</small></span>
+          </label>
+        }
         @if (hasVisualAnalysisInProgress(conversion)) {
           <p class="analysis-intro">Seçilen görsel için açıklama hazırlanıyor; yayınlama tamamlanana kadar beklenir.</p>
         }
-        <button type="button" class="primary-action" [disabled]="approvalLoading() || markdownEditing() || hasVisualAnalysisInProgress(conversion)" (click)="publishConversion()">
-          {{ approvalLoading() ? 'Konu analizi başlatılıyor…' : 'Markdown’ı onayla ve öğrenme haritasına dönüştür' }}
-        </button>
+        <div class="markdown-editor-actions">
+          <button type="button" class="primary-action" [disabled]="approvalLoading() || markdownEditing() || hasVisualAnalysisInProgress(conversion) || pendingRepairTables(conversion).length > 0 || (conversion.formula_review_required && !formulaWarningsAccepted(conversion))" (click)="publishConversion()">
+            {{ approvalLoading() ? 'Konu analizi başlatılıyor…' : 'Markdown’ı onayla ve öğrenme haritasına dönüştür' }}
+          </button>
+          <button type="button" class="secondary-action compact-action" [disabled]="!conversion.markdown || markdownEditing() || hasVisualAnalysisInProgress(conversion)" (click)="downloadConversionMarkdown(conversion)">
+            Markdown dosyasını indir
+          </button>
+          <button type="button" class="secondary-action compact-action" [disabled]="markdownEditing() || hasVisualAnalysisInProgress(conversion)" (click)="downloadConversionBundle(conversion)">Markdown ve görselleri ZIP indir</button>
+        </div>
       </section>
     }
     @if (documentAnalysis(); as analysis) {
@@ -786,6 +882,10 @@
             </label>
           }
         </div>
+        <label class="enrichment-option">
+          <input type="checkbox" [checked]="contextualEnrichment()" (change)="contextualEnrichment.set($any($event.target).checked)">
+          <span><strong>Yapay zekâ ile arama bağlamını zenginleştir</strong><small>İsteğe bağlıdır. Kaynak metni değişmez; bağlam ayrı saklanır. İndeksleme daha uzun sürebilir. Sığmayan bağlam kullanılmaz.</small></span>
+        </label>
         <button type="button" class="primary-action" [disabled]="!approvedProposalIds().length || approvalLoading() || lessonMergeChecking()" (click)="approveAnalysis()">
           {{ approvalLoading() ? 'İndeksleme başlatılıyor…' : lessonMergeChecking() ? 'Ders eşleşmesi kontrol ediliyor…' : 'İncelemeyi onayla ve indekslemeye devam et' }}
         </button>
@@ -849,6 +949,24 @@
             </div>
             @if (isDocumentExpanded(document.id)) {
               <section class="document-accordion" [attr.aria-label]="documentTitle(document) + ' konu başlıkları'">
+                @if (document.status === 'active') {
+                  <section class="document-index-settings" aria-label="Belge arama ayarları">
+                    <strong>Arama bağlamı: {{ document.contextual_enrichment ? 'Açık' : 'Kapalı' }}</strong>
+                    <label class="enrichment-option">
+                      <input type="checkbox" [checked]="indexDraft(document)" [disabled]="indexBusy(document.id)" (change)="setIndexDraft(document.id, $any($event.target).checked)">
+                      <span><strong>Bu belge için arama bağlamını zenginleştir</strong><small>Değişiklik yeniden indeksleme tamamlandığında uygulanır. Kaynak metni, konu eşleşmeleri ve öğrenme ilerlemesi korunur.</small></span>
+                    </label>
+                    <button type="button" class="secondary-action compact-action" [disabled]="indexBusy(document.id)" (click)="startReindex(document)">{{ indexBusy(document.id) ? 'İndeks yenileniyor…' : 'Ayarı uygula ve yeniden indeksle' }}</button>
+                    @if (indexJobs()[document.id]; as job) {
+                      <div aria-live="polite" class="index-job-status">
+                        <p>{{ job.message }}</p>
+                        @if (job.status === 'queued' || job.status === 'running') {
+                          <progress max="100" [value]="job.progress" aria-label="İndeks yenileme ilerlemesi"></progress><span>%{{ job.progress }}</span>
+                        }
+                      </div>
+                    }
+                  </section>
+                }
                 @if (documentDetailLoading() === document.id) {
                   <p>Dokümanın konu başlıkları yükleniyor…</p>
                 } @else if (documentConversion(document.id); as conversion) {

@@ -74,6 +74,9 @@ test('dönüşümden gelen görsel, toplu açıklama ve açık kabul ile Markdow
       return json(conversion(), 202);
     }
     if (path === `/api/documents/${documentId}/conversion`) return json(conversion());
+    if (path === `/api/documents/${documentId}/conversion/bundle`) {
+      return route.fulfill({ status: 200, contentType: 'application/zip', body: Buffer.from('504b0506000000000000000000000000000000000000', 'hex') });
+    }
     if (path === `/api/documents/${documentId}/assets/analyze-all` && method === 'POST') {
       analysisRequested = true;
       return json({ queued_count: 1, message: 'Görsel açıklaması sıraya alındı.' }, 202);
@@ -83,7 +86,7 @@ test('dönüşümden gelen görsel, toplu açıklama ve açık kabul ile Markdow
       return json(conversion());
     }
     if (path === `/api/documents/${documentId}/assets/${assetId}`) {
-      return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from([]) });
+      return route.fulfill({ status: 200, contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF1cAAAAASUVORK5CYII=', 'base64') });
     }
     if (path.includes(`/profiles/${profileId}/`)) return json({});
     return json({});
@@ -96,6 +99,15 @@ test('dönüşümden gelen görsel, toplu açıklama ve açık kabul ile Markdow
   await page.locator('button.document-toggle').click();
   await page.getByRole('button', { name: 'Markdown’ı incele ve yayınla' }).click();
   await expect(page.getByText('Korunan görseller')).toBeVisible();
+  const preview = page.locator('.conversion-asset-preview img');
+  await expect(preview).toHaveAttribute('src', `http://localhost:8000/api/documents/${documentId}/assets/${assetId}`);
+  await expect.poll(() => preview.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  const assetDownload = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Seçili görseli indir', exact: true }).click();
+  expect((await assetDownload).suggestedFilename()).toMatch(/gorsel-01\.png$/);
+  const bundleDownload = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Markdown ve görselleri ZIP indir' }).click();
+  expect((await bundleDownload).suggestedFilename()).toBe('konulab-markdown.zip');
   await page.getByRole('button', { name: 'Tüm görselleri sırayla açıkla' }).click();
   await expect(page.getByText('Açıklama hazır · 91%')).toBeVisible();
   await page.getByRole('button', { name: 'Hazır açıklamaların tümünü kabul et' }).click();

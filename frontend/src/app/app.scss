@@ -188,17 +188,27 @@ button.action:hover { filter: brightness(.94); }
 .conversion-assets { margin: 16px 0; }
 .conversion-assets h4 { color: #315957; font-size: .88rem; margin: 0 0 9px; }
 .asset-intro { color: #647674; font-size: .78rem; line-height: 1.45; margin: -3px 0 10px; }
-.conversion-assets > div { display: flex; gap: 10px; max-width: 100%; overflow-x: auto; padding-bottom: 4px; }
-.conversion-assets figure { background: #fff; border: 1px solid #d7e5d9; border-radius: 9px; flex: 0 0 220px; margin: 0; overflow: hidden; }
-.conversion-assets img { display: block; height: 118px; object-fit: cover; width: 100%; }
-.conversion-assets figcaption { color: #607371; font-size: .72rem; padding: 7px 8px; }
-.conversion-assets figcaption strong { color: #315957; display: block; }
-.conversion-assets figcaption p { color: #405957; font-size: .75rem; line-height: 1.45; margin: 7px 0 0; }
-.asset-analysis-action { font-size: .72rem; margin-top: 6px; padding: 0; }
+.asset-selector { display: grid; gap: 6px; margin: 12px 0 10px; max-width: 520px; }
+.asset-selector label { color: #315957; font-size: .76rem; font-weight: 700; }
+.asset-selector select { background: #fff; border: 1px solid #cbd9d0; border-radius: 8px; color: #29494a; font: inherit; min-height: 40px; padding: 8px 10px; width: 100%; }
+.conversion-asset-preview { align-items: start; background: #fff; border: 1px solid #d7e5d9; border-radius: 11px; display: grid; gap: 14px; grid-template-columns: minmax(200px, .85fr) minmax(0, 1.15fr); margin: 0; overflow: hidden; padding: 12px; }
+.conversion-asset-preview > img { background: #f4f7f4; border: 1px solid #e2eae3; border-radius: 8px; display: block; height: auto; max-height: 360px; object-fit: contain; width: 100%; }
+.conversion-asset-preview figcaption { color: #607371; font-size: .78rem; min-width: 0; }
+.asset-preview-heading { align-items: start; display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: space-between; }
+.asset-preview-heading strong { color: #315957; }
+.asset-preview-heading label { align-items: center; color: #45605b; display: flex; font-size: .74rem; gap: 6px; }
+.asset-preview-heading input { accent-color: #08775c; }
+.asset-download-action { align-items: center; display: inline-flex; font-size: .74rem; padding: 7px 9px; }
+.table-repair-review { border-top: 1px solid #d7e5d9; margin-top: 12px; padding-top: 12px; }
+.table-repair-proposal { background: #f5f8f5; border: 1px solid #d7e5d9; border-radius: 8px; max-height: 360px; overflow: auto; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.conversion-asset-preview figcaption p { color: #405957; font-size: .8rem; line-height: 1.55; margin: 10px 0 0; }
+.asset-analysis-action { font-size: .76rem; margin-top: 10px; padding: 0; }
+.asset-decision { border-top: 1px solid #e1eae2; display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 12px; padding-top: 9px; }
+.asset-decision .text-action { text-align: left; }
 .asset-status { color: #6d7e7b; display: block; font-size: .72rem; margin-top: 6px; }
 .asset-status.ready { color: #247551; font-weight: 700; }
-.conversion-assets figcaption em { color: #8a6540; display: block; font-size: .7rem; line-height: 1.35; margin-top: 5px; }
-.conversion-assets figcaption .asset-error { color: #a34236; }
+.conversion-asset-preview figcaption em { color: #8a6540; display: block; font-size: .74rem; line-height: 1.4; margin-top: 8px; }
+.conversion-asset-preview figcaption .asset-error { color: #a34236; }
 .asset-table-structure { color: #49625e; font-size: .69rem; margin-top: 7px; }
 .asset-table-structure summary { cursor: pointer; font-weight: 700; }
 .asset-table-structure pre { margin: 6px 0 0; max-height: 150px; overflow: auto; white-space: pre-wrap; }
@@ -568,4 +578,18 @@ button.action:hover { filter: brightness(.94); }
   .embedding-readonly { grid-template-columns: 1fr; }
   .prerequisite-heading { align-items: flex-start; flex-direction: column; }
   .prerequisite-actions { grid-template-columns: 1fr; }
+  .conversion-asset-preview { grid-template-columns: 1fr; }
+  .conversion-asset-preview > img { max-height: 320px; }
+}
+:host .enrichment-option {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 16px;
+  margin: 16px 0;
+  border: 1px solid #cbded5;
+  border-radius: 12px;
+  background: #f6faf7;
+  small { display: block; margin-top: 6px; line-height: 1.5; }
+  input { margin-top: 4px; accent-color: #007459; }
 }

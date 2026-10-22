@@ -118,6 +118,15 @@ class QdrantVectorStore:
         except Exception as error:
             raise VectorStoreUnavailableError("Eski doküman vektörleri Qdrant'tan kaldırılamadı.") from error
 
+    def delete_sections(self, section_ids: list[UUID]) -> None:
+        if not section_ids:
+            return
+        try:
+            self.client.delete(collection_name=self.collection_name,
+                               points_selector=qmodels.PointIdsList(points=[str(value) for value in section_ids]), wait=True)
+        except Exception as error:
+            raise VectorStoreUnavailableError("Eski parça vektörleri temizlenemedi.") from error
+
     def search(
         self,
         query_vector: list[float],

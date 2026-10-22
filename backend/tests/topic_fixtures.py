@@ -1,3 +1,4 @@
+"""Yalnız otomatik testlerde kullanılan örnek konu verileri."""
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

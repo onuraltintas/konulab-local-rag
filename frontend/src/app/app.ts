@@ -1,9 +1,11 @@
 import { DatePipe, JsonPipe } from '@angular/common';
-import { Component, computed, effect, inject, signal } from '@angular/core';
+import { Component, DestroyRef, computed, effect, inject, signal } from '@angular/core';
+import { DocumentIndexJob } from './learning-api.service';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive } from '@angular/router';
 import { filter } from 'rxjs';
 import { AuthSession, ChatResponse, ChatSource, ConversationDetail, DashboardReview, DashboardTopic, DocumentAnalysis, DocumentAsset, DocumentConversion, DocumentDeletionImpact, FeedbackKind, FeedbackReviewStatus, LearnerDashboard, LearningApiService, LessonMergePreview, LlmProvider, ProviderDiscovery, QualityFeedback, QualityInsights, QualityOverview, RuntimeModelSettings, SourceDocument, SourceViewer, SystemStatus, Topic, TopicApprovalDecision, TopicPrerequisiteSuggestion, TopicQuiz, TopicQuizQuestion, TopicStudyStep } from './learning-api.service';
 import { LearningProgressStore } from './learning-progress.store';
+import { MathTextDirective } from './math-text.directive';
 import { studyStepCheckPrompt, studyStepExplainPrompt, topicOverviewPrompt, topicSummaryPrompt } from './learning-prompts';
 
 type UploadQueueStatus = 'queued' | 'analyzing' | 'ready' | 'failed';
@@ -26,7 +28,7 @@ interface LessonGroup {
 
 @Component({
   selector: 'app-root',
-  imports: [RouterLink, RouterLinkActive, JsonPipe, DatePipe],
+  imports: [RouterLink, RouterLinkActive, JsonPipe, DatePipe, MathTextDirective],
   templateUrl: './app.html',
   styleUrl: './app.scss'
 })
@@ -34,7 +36,7 @@ export class App {
   private readonly api = inject(LearningApiService);
   private readonly progress = inject(LearningProgressStore);
   private readonly router = inject(Router);
-  private readonly feedbackStateStorageKey = 'konulab.feedback-state.v1';
+  private readonly feedbackStateStorageKey = 'konulab.feedback-state.v2';
 
   protected readonly topics = signal<Topic[]>([]);
   protected readonly documents = signal<SourceDocument[]>([]);
@@ -104,6 +106,13 @@ export class App {
   protected readonly conversionReview = signal<DocumentConversion | null>(null);
   protected readonly visualAnalysisLoading = signal(false);
   protected readonly selectedAssetIds = signal<string[]>([]);
+  protected readonly selectedConversionAssetId = signal<string | null>(null);
+  protected readonly assetDownloadId = signal<string | null>(null);
+  protected readonly selectedConversionAsset = computed(() => {
+    const assets = this.conversionReview()?.assets ?? [];
+    const selectedId = this.selectedConversionAssetId();
+    return assets.find((asset) => asset.id === selectedId) ?? assets[0] ?? null;
+  });
   protected readonly markdownEditing = signal(false);
   protected readonly markdownDraft = signal('');
   protected readonly markdownSaving = signal(false);
@@ -121,6 +130,12 @@ export class App {
   protected readonly selectedDocumentIds = signal<string[]>([]);
   protected readonly toast = signal<{ message: string; tone: 'success' | 'error' } | null>(null);
   protected readonly approvedProposalIds = signal<string[]>([]);
+  protected readonly contextualEnrichment = signal(false);
+  protected readonly indexJobs = signal<Record<string, DocumentIndexJob | null>>({});
+  protected readonly indexDrafts = signal<Record<string, boolean>>({});
+  protected readonly indexStarting = signal<string | null>(null);
+  protected readonly formulaAcceptanceKey = signal<string | null>(null);
+  private readonly indexTimers = new Map<string, number>();
   protected readonly proposalDrafts = signal<Record<string, { title: string; description: string }>>({});
   protected readonly lessonTitleDraft = signal('');
   protected readonly lessonMergePreview = signal<LessonMergePreview | null>(null);
@@ -185,6 +200,7 @@ export class App {
   });
 
   constructor() {
+    inject(DestroyRef).onDestroy(() => { for (const timer of this.indexTimers.values()) window.clearTimeout(timer); });
     this.updateCurrentPage(this.router.url);
     this.router.events.pipe(filter((event): event is NavigationEnd => event instanceof NavigationEnd)).subscribe((event) => {
       this.updateCurrentPage(event.urlAfterRedirects);
@@ -1002,6 +1018,7 @@ export class App {
       approval_queued: 'İndeksleme sırası',
       indexing: 'Konu eşleştirmeleri hazırlanıyor',
       vectorizing: 'Embedding ve Qdrant aktarımı',
+      contextualizing: 'Yapay zekâ ile arama bağlamı hazırlanıyor',
       completed: 'Kaynak hazır',
       ready: 'İnceleme hazır',
       failed: 'Analiz tamamlanamadı',
@@ -1014,21 +1031,22 @@ export class App {
     if (analysis.status === 'ready') return 66;
     if (analysis.stage === 'approval_queued') return 68;
     if (analysis.stage === 'indexing') return 78;
+    if (analysis.stage === 'contextualizing') return 78 + Math.round(Math.max(0, analysis.progress - 35) / 2);
     if (analysis.stage === 'vectorizing') return 90;
     return Math.min(55, Math.max(20, analysis.progress));
   }
 
   protected workflowStatusText(analysis: DocumentAnalysis): string {
     if (analysis.status === 'ready') return 'Konu taslağı hazır; incelemeniz ve onayınız bekleniyor.';
-    if (analysis.status === 'approved') return 'Kaynak indekslendi ve öğrenmeye hazır.';
-    if (analysis.stage === 'approval_queued' || analysis.stage === 'indexing' || analysis.stage === 'vectorizing') {
+    if (analysis.status === 'approved') return analysis.message ?? 'Kaynak indekslendi ve öğrenmeye hazır.';
+    if (['approval_queued', 'indexing', 'contextualizing', 'vectorizing'].includes(analysis.stage)) {
       return analysis.message ?? 'Onaylanan konular Qdrant’a aktarılıyor.';
     }
     return analysis.message ?? 'Konu analizi sürüyor.';
   }
 
   protected workflowStepState(analysis: DocumentAnalysis, step: 1 | 2 | 3): 'waiting' | 'active' | 'complete' {
-    const indexing = analysis.stage === 'approval_queued' || analysis.stage === 'indexing' || analysis.stage === 'vectorizing';
+    const indexing = ['approval_queued', 'indexing', 'contextualizing', 'vectorizing'].includes(analysis.stage);
     if (step === 1) {
       return analysis.status === 'processing' && !indexing ? 'active' : 'complete';
     }
@@ -1068,6 +1086,57 @@ export class App {
 
   protected isDocumentExpanded(documentId: string): boolean {
     return this.expandedDocumentId() === documentId;
+  }
+
+  protected indexBusy(documentId: string): boolean {
+    return this.indexStarting() === documentId || ['queued', 'running'].includes(this.indexJobs()[documentId]?.status ?? '');
+  }
+
+  protected indexDraft(document: SourceDocument): boolean {
+    const job = this.indexJobs()[document.id];
+    if (job && ['queued', 'running'].includes(job.status)) return job.contextual_enrichment;
+    return this.indexDrafts()[document.id] ?? document.contextual_enrichment ?? false;
+  }
+
+  protected setIndexDraft(documentId: string, enabled: boolean): void {
+    this.indexDrafts.update(items => ({ ...items, [documentId]: enabled }));
+  }
+
+  protected startReindex(document: SourceDocument): void {
+    if (this.indexBusy(document.id)) return;
+    this.indexStarting.set(document.id);
+    this.api.startIndexJob(document.id, this.indexDraft(document)).subscribe({
+      next: job => {
+        this.indexStarting.set(null);
+        this.indexJobs.update(items => ({ ...items, [document.id]: job }));
+        this.refreshIndexJob(document.id);
+      },
+      error: response => {
+        this.indexStarting.set(null);
+        this.showToast(response.error?.detail ?? 'İndeks yenilemesi başlatılamadı.', 'error');
+      },
+    });
+  }
+
+  private refreshIndexJob(documentId: string): void {
+    const timer = this.indexTimers.get(documentId);
+    if (timer) window.clearTimeout(timer);
+    this.indexTimers.delete(documentId);
+    this.api.getIndexJob(documentId).subscribe({
+      next: job => {
+        const previous = this.indexJobs()[documentId];
+        this.indexJobs.update(items => ({ ...items, [documentId]: job }));
+        if (job && ['queued', 'running'].includes(job.status)) {
+          this.indexTimers.set(documentId, window.setTimeout(() => this.refreshIndexJob(documentId), 1200));
+        } else if (job?.status === 'completed') {
+          this.documents.update(items => items.map(item => item.id === documentId ? { ...item, contextual_enrichment: job.contextual_enrichment } : item));
+          if (previous && previous.status !== 'completed') this.showToast(job.message ?? 'İndeks yenilendi.', 'success');
+        } else if (job?.status === 'failed' && previous && previous.status !== 'failed') {
+          this.showToast(job.message ?? 'İndeks yenilenemedi.', 'error');
+        }
+      },
+      error: () => this.showToast('İndeks durumu alınamadı. Sayfayı yenileyerek yeniden kontrol edebilirsiniz.', 'error'),
+    });
   }
 
   protected documentWorkflowLabel(document: SourceDocument): string {
@@ -1201,6 +1270,7 @@ export class App {
     if (conversion.status !== 'ready') return;
     this.conversionReview.set(conversion);
     this.selectedAssetIds.set([]);
+    this.selectedConversionAssetId.set(conversion.assets.find((asset) => asset.table_repair_required && asset.inclusion_status === 'pending')?.id ?? conversion.assets[0]?.id ?? null);
     this.markdownEditing.set(false);
     this.markdownDraft.set(conversion.markdown ?? '');
     this.documentAnalysis.set(null);
@@ -1209,6 +1279,65 @@ export class App {
 
   protected documentAssetUrl(asset: DocumentAsset): string {
     return this.api.documentAssetUrl(asset);
+  }
+
+  protected downloadConversionAsset(conversion: DocumentConversion, asset: DocumentAsset): void {
+    if (this.assetDownloadId()) return;
+    this.assetDownloadId.set(asset.id);
+    this.api.downloadDocumentAsset(conversion.document.id, asset.id).subscribe({
+      next: (blob) => {
+        const filename = this.conversionAssetFilename(conversion, asset);
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.hidden = true;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+        this.assetDownloadId.set(null);
+        this.showToast(`${filename} indirme işlemi başlatıldı.`, 'success');
+      },
+      error: (response) => {
+        this.assetDownloadId.set(null);
+        this.showToast(response.status ? `Seçili görsel indirilemedi (HTTP ${response.status}).` : 'Seçili görsel indirilemedi; API bağlantısı veya CORS ayarlarını kontrol edin.', 'error');
+      },
+    });
+  }
+
+  protected selectConversionAsset(assetId: string): void {
+    this.selectedConversionAssetId.set(assetId);
+  }
+
+  protected conversionAssetOptionLabel(asset: DocumentAsset, index: number): string {
+    const kind = asset.kind === 'table' ? 'Tablo' : 'Görsel';
+    const page = asset.page_number ? ` · ${asset.page_number}. sayfa` : '';
+    const status = asset.analysis_status === 'ready'
+      ? asset.inclusion_status === 'accepted'
+        ? 'Markdown’da'
+        : asset.inclusion_status === 'rejected'
+          ? 'Hariç tutuldu'
+          : asset.table_repair_required ? 'Tablo onayı bekliyor' : 'Açıklama hazır'
+      : asset.analysis_status === 'processing'
+        ? 'İşleniyor'
+        : asset.analysis_status === 'failed'
+          ? 'Hata'
+          : 'Bekliyor';
+    return `${index + 1}. ${kind}${page} · ${status}${asset.table_repair_required ? ' · Yeniden çıkarılan tablo' : ''}`;
+  }
+
+  protected pendingRepairTables(conversion: DocumentConversion): DocumentAsset[] {
+    return conversion.assets.filter((asset) => asset.table_repair_required && asset.inclusion_status === 'pending');
+  }
+
+  private conversionAssetFilename(conversion: DocumentConversion, asset: DocumentAsset): string {
+    const sourceName = conversion.document.source_name || 'ders-dokumani';
+    const baseName = sourceName.replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim() || 'ders-dokumani';
+    const index = conversion.assets.findIndex((item) => item.id === asset.id) + 1;
+    const kind = asset.kind === 'table' ? 'tablo' : 'gorsel';
+    const page = asset.page_number ? `-sayfa-${asset.page_number}` : '';
+    return `${baseName}${page}-${kind}-${String(index).padStart(2, '0')}.png`;
   }
 
   protected hasVisualAnalysisInProgress(conversion: DocumentConversion): boolean {
@@ -1253,6 +1382,42 @@ export class App {
     });
   }
 
+  protected downloadConversionMarkdown(conversion: DocumentConversion): void {
+    const markdown = conversion.markdown;
+    if (!markdown || this.markdownEditing() || this.hasVisualAnalysisInProgress(conversion)) return;
+    const sourceName = conversion.document.source_name || 'ders-dokumani';
+    const baseName = sourceName
+      .replace(/\.[^.]+$/, '')
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_')
+      .trim() || 'ders-dokumani';
+    const filename = `${baseName}.md`;
+    const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.hidden = true;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+    this.showToast(`${filename} indirme işlemi başlatıldı.`, 'success');
+  }
+
+  protected downloadConversionBundle(conversion: DocumentConversion): void {
+    this.api.downloadConversionBundle(conversion.document.id).subscribe({
+      next: (blob) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'konulab-markdown.zip';
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        this.showToast('Markdown ve görsel paketi indiriliyor.', 'success');
+      },
+      error: () => this.showToast('Paket indirilemedi. API sürümünü ve dosyaların durumunu kontrol edin.', 'error'),
+    });
+  }
+
   protected restoreMarkdownRevision(revisionNumber: number): void {
     const conversion = this.conversionReview();
     if (!conversion?.markdown_hash || this.markdownRestoring() !== null) return;
@@ -1275,12 +1440,12 @@ export class App {
     });
   }
 
-  protected analyzeConversionAsset(asset: DocumentAsset): void {
+  protected analyzeConversionAsset(asset: DocumentAsset, refineOnly = false): void {
     const conversion = this.conversionReview();
     if (!conversion || asset.analysis_status === 'processing' || this.visualAnalysisLoading() || this.markdownEditing()) return;
     this.visualAnalysisLoading.set(true);
     this.uploadError.set(null);
-    this.api.analyzeDocumentAsset(conversion.document.id, asset.id).subscribe({
+    this.api.analyzeDocumentAsset(conversion.document.id, asset.id, refineOnly).subscribe({
       next: (updatedAsset) => {
         this.visualAnalysisLoading.set(false);
         this.applyConversionAssetUpdate(conversion.document.id, updatedAsset);
@@ -1326,7 +1491,7 @@ export class App {
 
   protected decideConversionAsset(asset: DocumentAsset, decision: 'accepted' | 'rejected'): void {
     const conversion = this.conversionReview();
-    if (!conversion || asset.analysis_status !== 'ready') return;
+    if (!conversion || (asset.analysis_status !== 'ready' && !(asset.table_repair_required && decision === 'rejected' && asset.analysis_status !== 'processing'))) return;
     this.api.decideDocumentAssetInclusion(conversion.document.id, asset.id, decision).subscribe({
       next: (updated) => { this.applyConversionAssetUpdate(conversion.document.id, updated); this.api.getDocumentConversion(conversion.document.id).subscribe({ next: (fresh) => { this.conversionReview.set(fresh); this.documentConversions.update((items) => ({ ...items, [fresh.document.id]: fresh })); } }); },
       error: (response) => this.uploadError.set(response.error?.detail ?? 'Görsel kararı kaydedilemedi.'),
@@ -1375,7 +1540,7 @@ export class App {
     this.approvalLoading.set(true);
     this.stopConversionReviewPolling();
     this.uploadError.set(null);
-    this.api.publishConversion(conversion.document.id).subscribe({
+    this.api.publishConversion(conversion.document.id, this.formulaWarningsAccepted(conversion), conversion.markdown_hash).subscribe({
       next: (analysis) => {
         this.approvalLoading.set(false);
         this.conversionReview.set(null);
@@ -1391,6 +1556,18 @@ export class App {
         this.uploadError.set(response.error?.detail ?? 'Markdown öğrenme haritasına gönderilemedi.');
       },
     });
+  }
+
+  protected formulaWarningsAccepted(conversion: DocumentConversion): boolean {
+    return !!conversion.markdown_hash && this.formulaAcceptanceKey() === `${conversion.document.id}:${conversion.markdown_hash}`;
+  }
+
+  protected acceptFormulaWarnings(conversion: DocumentConversion, accepted: boolean): void {
+    this.formulaAcceptanceKey.set(accepted ? `${conversion.document.id}:${conversion.markdown_hash}` : null);
+  }
+
+  protected formulaSourceUrl(conversion: DocumentConversion, index: number): string {
+    return this.api.formulaImageUrl(conversion.document.id, index);
   }
 
   protected isDocumentSelected(documentId: string): boolean {
@@ -1561,7 +1738,7 @@ export class App {
     if (!analysis) return;
     this.approvalLoading.set(true);
     this.uploadError.set(null);
-    this.api.approveDocumentAnalysis(analysis.document.id, lessonTitle, decisions, allowExistingLessonMerge).subscribe({
+    this.api.approveDocumentAnalysis(analysis.document.id, lessonTitle, decisions, allowExistingLessonMerge, this.contextualEnrichment()).subscribe({
       next: (nextAnalysis) => {
         this.approvalLoading.set(false);
         this.lessonMergePreview.set(null);
@@ -1679,6 +1856,7 @@ export class App {
       next: (documents) => {
         this.documents.set(documents);
         for (const document of documents) {
+          if (document.status === 'active') this.refreshIndexJob(document.id);
           if (document.status === 'active' || this.documentDetail(document.id) || this.documentConversion(document.id)) continue;
           this.api.getDocumentConversion(document.id).subscribe({
             next: (conversion) => {
@@ -1802,6 +1980,7 @@ export class App {
   }
 
   private applyAnalysisState(analysis: DocumentAnalysis): void {
+    if (this.documentAnalysis()?.document.id !== analysis.document.id) this.contextualEnrichment.set(false);
     this.documentAnalysis.set(analysis);
     this.documentDetails.update((items) => ({ ...items, [analysis.document.id]: analysis }));
     if (analysis.status === 'ready') {

@@ -6,6 +6,9 @@ from functools import lru_cache
 from app.prompts import JSON_ONLY_SYSTEM_PROMPT, answer_quality_judge_prompt, prerequisite_suggestion_prompt, source_grounded_chat_prompt, topic_quiz_prompt, visual_asset_description_prompt
 from app.runtime_models import ModelProviderError, complete, current_runtime_model_config
 from app.schemas import SearchResult, TopicStudyStepResponse
+from app.prompts import table_reconstruction_prompt, visual_description_review_prompt
+from app.table_repair import validate_shape
+from app.prompts import table_word_reread_prompt, table_structure_review_prompt
 
 
 class OllamaUnavailableError(RuntimeError):
@@ -23,6 +26,66 @@ def format_sources(sources: list[SearchResult]) -> str:
 
 class OllamaClient:
     """Geriye dönük adını koruyan, Ollama veya vLLM kullanan birleşik istemci."""
+
+    async def read_formula(self, image: bytes) -> dict:
+        from app.prompts import formula_reading_prompt
+        config = current_runtime_model_config()
+        result = await self._table_detail_json(image, formula_reading_prompt(), 1600)
+        if not isinstance(result.get("latex"), str) or len(result["latex"]) > 5000 or type(result.get("readable")) is not bool:
+            raise OllamaUnavailableError("Formül okuması geçersiz.")
+        return {**result, "model": config.vision_model}
+
+    async def _table_detail_json(self, image: bytes, prompt: str, max_tokens: int) -> dict:
+        config = current_runtime_model_config()
+        try:
+            content = await complete(config, [
+                {"role": "system", "content": JSON_ONLY_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ], model=config.vision_model, temperature=0, max_tokens=max_tokens, json_mode=True, image=image, read_timeout=900)
+            result = json.loads(content.removeprefix("```json").removesuffix("```").strip())
+            if not isinstance(result, dict):
+                raise ValueError("JSON nesnesi bekleniyor.")
+            return result
+        except (ModelProviderError, ValueError) as error:
+            raise OllamaUnavailableError("Yüksek çözünürlüklü tablo kontrolü tamamlanamadı.") from error
+
+    async def read_table_word(self, image: bytes) -> dict:
+        result = await self._table_detail_json(image, table_word_reread_prompt(), 180)
+        if not isinstance(result.get("text"), str) or len(result["text"]) > 120 or type(result.get("readable")) is not bool:
+            raise OllamaUnavailableError("Hücre yeniden okuma yanıtı geçersiz.")
+        return result
+
+    async def review_table_structure(self, image: bytes, candidate: dict) -> dict:
+        result = await self._table_detail_json(image, table_structure_review_prompt(candidate), 1400)
+        if any(type(result.get(key)) is not bool for key in ("structure_correct", "needs_review")):
+            raise OllamaUnavailableError("Tablo yapı kontrolü geçersiz.")
+        for key in ("context_text", "issues"):
+            if not isinstance(result.get(key), list) or len(result[key]) > 10 or any(not isinstance(text, str) or len(text) > 500 for text in result[key]):
+                raise OllamaUnavailableError("Tablo kontrol metni geçersiz.")
+        return result
+
+    async def reconstruct_table(self, image: bytes, page_number: int | None) -> dict:
+        config = current_runtime_model_config()
+        feedback = ""
+        for attempt in range(2):
+            try:
+                content = await complete(config, [
+                    {"role": "system", "content": JSON_ONLY_SYSTEM_PROMPT},
+                    {"role": "user", "content": table_reconstruction_prompt(page_number) + feedback},
+                ], model=config.vision_model, temperature=0.0, max_tokens=12000, json_mode=True, image=image, read_timeout=900)
+                result = validate_shape(json.loads(content.removeprefix("```json").removesuffix("```").strip()))
+                description = result.get("description")
+                if not isinstance(description, str) or not description.strip() or len(description) > 450 or type(result.get("confidence")) is not int or not 0 <= result["confidence"] <= 100 or type(result.get("needs_review")) is not bool:
+                    raise ValueError("Tablo açıklaması geçersiz.")
+                result["description"] = " ".join(description.split())
+                result["model_attempts"] = attempt + 1
+                return result
+            except ModelProviderError as error:
+                raise OllamaUnavailableError("Tablo modeli yanıt vermedi; kaynak tablo korunuyor.") from error
+            except (ValueError, TypeError, KeyError) as error:
+                if attempt:
+                    raise OllamaUnavailableError(f"Tablo yeniden çıkarılamadı: {str(error)[:250]}") from error
+                feedback = f"\nÖnceki denemede şu yapısal hata bulundu: {str(error)[:200]}. Görseli yeniden incele. Hücreleri kısaltma, indeksleri 0'dan başlat ve bütün konumları kapsa. Birleşik hücre gerekmiyorsa grid biçimini kullan.\n"
 
     async def answer(
         self,
@@ -139,6 +202,14 @@ class OllamaClient:
                 {"role": "user", "content": visual_asset_description_prompt(kind, page_number)},
             ], model=config.vision_model, temperature=0.1, max_tokens=900, json_mode=True, image=image)
             result = json.loads(content.removeprefix("```json").removesuffix("```").strip())
+            draft = result.get("description") if isinstance(result, dict) else None
+            if not isinstance(draft, str) or not draft.strip() or len(draft) > 450:
+                raise ValueError("Görsel açıklama taslağı geçersiz.")
+            reviewed = await complete(config, [
+                {"role": "system", "content": JSON_ONLY_SYSTEM_PROMPT},
+                {"role": "user", "content": visual_description_review_prompt(draft)},
+            ], model=config.vision_model, temperature=0.0, max_tokens=900, json_mode=True, image=image)
+            result = json.loads(reviewed.removeprefix("```json").removesuffix("```").strip())
         except (ModelProviderError, ValueError, json.JSONDecodeError) as error:
             raise OllamaUnavailableError("Görsel model açıklama üretemedi. Vision destekli modelin yüklü olduğunu kontrol edin.") from error
         description = result.get("description") if isinstance(result, dict) else None
@@ -147,14 +218,14 @@ class OllamaClient:
         if (
             not isinstance(description, str)
             or not description.strip()
-            or len(description.strip()) > 700
-            or not isinstance(confidence, int)
+            or len(description.strip()) > 450
+            or type(confidence) is not int
             or not 0 <= confidence <= 100
             or not isinstance(needs_review, bool)
         ):
             raise OllamaUnavailableError("Görsel model geçerli bir açıklama döndürmedi.")
         return {
-            "description": description.strip(),
+            "description": " ".join(description.split()),
             "confidence": confidence,
             "needs_review": needs_review,
         }

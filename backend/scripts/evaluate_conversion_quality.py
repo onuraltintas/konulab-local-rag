@@ -1,7 +1,7 @@
 """Docling dönüşüm kalitesini kullanıcı verisini indekslemeden ölçer.
 
 Çalıştırma (proje kökünden):
-    uv run --project backend python backend/scripts/evaluate_conversion_quality.py
+    python scripts/evaluate_conversion_quality.py --manifest /inputs/manifest.json --source-root /inputs
 
 Manifest yalnızca yerel kaynakların göreli yollarını ve insan tarafından gözden
 geçirilmiş alt eşikleri içerir; büyük test dosyaları depoya kopyalanmaz. Yeni
@@ -18,10 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from app.conversion import convert_to_markdown
-
-
-PROJECT_ROOT = Path(__file__).parents[2]
-DEFAULT_MANIFEST = Path(__file__).parents[1] / "evals" / "conversion_quality_benchmark.json"
 
 
 def markdown_heading_count(markdown: str) -> int:
@@ -75,8 +71,8 @@ def evaluate_case(case: dict[str, Any], source_root: Path) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="KonuLab belge dönüşüm kalite değerlendirmesi")
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--source-root", type=Path, default=PROJECT_ROOT)
+    parser.add_argument("--manifest", type=Path, required=True, help="Kullanıcı tarafından sağlanan değerlendirme manifest'i")
+    parser.add_argument("--source-root", type=Path, required=True, help="Değerlendirilecek dosyaların bulunduğu klasör")
     parser.add_argument("--report", type=Path, help="İsteğe bağlı JSON rapor dosyası")
     args = parser.parse_args()
     cases = json.loads(args.manifest.read_text(encoding="utf-8"))

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from app.document_analysis import TopicSuggestion
 from app.db import SessionLocal
 from app.main import app
-from app.seed import seed_topics
+from topic_fixtures import seed_topics
 
 
 def test_document_analysis_requires_approval_before_indexing(tmp_path, monkeypatch) -> None:

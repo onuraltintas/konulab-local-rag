@@ -1,7 +1,7 @@
 """KonuLab dense ve hibrit retrieval kalitesini aynı ders sorularında ölçer.
 
 Çalıştırma (GPU API konteyneri içinde):
-    python scripts/evaluate_retrieval.py
+    python scripts/evaluate_retrieval.py --benchmark /inputs/questions.json
 
 Her benchmark kaydında, doğru kabul edilen kaynak parçasında geçmesi gereken en
 az bir ifade bulunur. Bu, kaynak değiştiğinde UUID'lere bağımlı kalmadan ölçüm
@@ -11,9 +11,9 @@ yapılmasını sağlar.
 from __future__ import annotations
 
 import json
+import argparse
 from math import log2
 from pathlib import Path
-import sys
 from uuid import UUID
 
 from qdrant_client.http import models as qmodels
@@ -25,7 +25,6 @@ from app.models import DocumentSection, Topic, TopicSource
 from app.vector_store import get_vector_store
 
 
-BENCHMARK_PATH = Path(__file__).parents[1] / "evals" / "tokenization_retrieval_benchmark.json"
 K = 3
 
 
@@ -78,8 +77,7 @@ def hybrid_search(query: str, topic_id: int, limit: int) -> list[UUID]:
     ]
 
 
-def evaluate() -> None:
-    cases = json.loads(BENCHMARK_PATH.read_text(encoding="utf-8"))
+def evaluate(cases: list[dict]) -> None:
     database = SessionLocal()
     totals = {"dense": [0.0, 0.0, 0.0], "hybrid": [0.0, 0.0, 0.0]}
     try:
@@ -123,8 +121,14 @@ def evaluate() -> None:
 
 
 if __name__ == "__main__":
-    if "--validate" in sys.argv:
-        cases = json.loads(BENCHMARK_PATH.read_text(encoding="utf-8"))
+    parser = argparse.ArgumentParser(description="Dense/hibrit arama kalite karşılaştırması")
+    parser.add_argument("--benchmark", type=Path, required=True, help="Kullanıcı tarafından sağlanan arama değerlendirme kümesi")
+    parser.add_argument("--validate", action="store_true", help="Konu ve beklenen ifadeleri model çalıştırmadan denetle")
+    args = parser.parse_args()
+    cases = json.loads(args.benchmark.read_text(encoding="utf-8"))
+    if not isinstance(cases, list) or not cases:
+        raise RuntimeError("Benchmark boş olmayan bir JSON listesi olmalı.")
+    if args.validate:
         database = SessionLocal()
         try:
             missing: list[str] = []
@@ -146,4 +150,4 @@ if __name__ == "__main__":
         finally:
             database.close()
     else:
-        evaluate()
+        evaluate(cases)

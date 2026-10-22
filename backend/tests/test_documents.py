@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from app.db import SessionLocal
 from app.main import app
 from app.models import Topic, TopicSource
-from app.seed import seed_topics
+from topic_fixtures import seed_topics
 
 
 def test_same_logical_document_replaces_active_version(tmp_path, monkeypatch) -> None:

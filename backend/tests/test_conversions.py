@@ -14,6 +14,8 @@ def test_conversion_requires_markdown_publication_before_topic_analysis(tmp_path
     from app import main
 
     monkeypatch.setattr(main.settings, "storage_path", tmp_path / "sources")
+    # Bu test yayın onayını sınar; embedding modeli ayrı testlerin kapsamındadır.
+    monkeypatch.setattr(main, "parse_document_for_embedding", main.parse_text_document)
     monkeypatch.setattr(
         main,
         "convert_to_markdown",
@@ -24,7 +26,7 @@ def test_conversion_requires_markdown_publication_before_topic_analysis(tmp_path
             ocr_used=False,
             page_count=1,
             table_count=0,
-            image_count=0,
+            image_count=1,
             assets=(ConvertedAsset(kind="picture", page_number=1, content=b"png-smoke"),),
         ),
     )
@@ -64,6 +66,13 @@ def test_conversion_requires_markdown_publication_before_topic_analysis(tmp_path
         asset_response = client.get(conversion["assets"][0]["url"])
         assert asset_response.status_code == 200
         assert asset_response.content == b"png-smoke"
+        import zipfile
+        from io import BytesIO
+        bundle = client.get(f"/api/documents/{document_id}/conversion/bundle")
+        assert bundle.status_code == 200
+        with zipfile.ZipFile(BytesIO(bundle.content)) as archive:
+            assert "belge.md" in archive.namelist()
+            assert len([name for name in archive.namelist() if name.startswith("assets/")]) == 1
 
         # Dönüşüm hazır olsa da kullanıcı açıkça yayınlamadan konu analizi yoktur.
         assert client.get(f"/api/documents/{document_id}/analysis").status_code == 404

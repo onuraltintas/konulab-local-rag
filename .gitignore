@@ -14,3 +14,7 @@ frontend/test-results/
 frontend/playwright-report/
 .agents/
 .codex/
+.aws/
+.ruff_cache/
+frontend/.angular/
+*.ses

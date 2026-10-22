@@ -31,9 +31,6 @@ services:
       TOKENIZERS_PARALLELISM: "false"
     volumes:
       - ./backend/data:/app/data
-      # Kalite değerlendirmesi yalnızca açık çağrıyla çalışır; ders kaynakları
-      # API imajına kopyalanmaz ve konteynerden değiştirilemez.
-      - ./Doc:/workspace/Doc:ro
       - hf_cache:/models/huggingface
     restart: unless-stopped
 

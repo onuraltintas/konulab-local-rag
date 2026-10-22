@@ -69,12 +69,47 @@ GPU konteynerini kullanmayacağınız geliştirme makinelerinde:
 
 ```bash
 cd backend
-uv sync --extra embeddings-cpu
+uv sync --extra embeddings-cpu --extra conversion
 export EMBEDDING_DEVICE=cpu
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
 Bu yol CPU PyTorch kullanır; GX10 üzerinde üretim/indeksleme yolu değildir.
+Linux'ta bağımsız metin/OCR kontrolleri için `poppler-utils`, `tesseract-ocr`,
+`tesseract-ocr-tur` ve `tesseract-ocr-eng` paketlerini de kurun; GPU imajı bunları içerir.
+
+## Temiz kurulum ve veri yerleşimi
+
+Proje ders kitabı, örnek ders veya hazır kullanıcı verisi içermez. İlk çalıştırmada
+boş SQLite şeması ve varsayılan model ayarları oluşturulur. İlk tarayıcı açılışında
+yeni bir yerel profil oluşur; dersler ve konular ancak kaynak yükleyip onayladığınızda eklenir.
+
+- `backend/app/`: uygulama kodu.
+- `frontend/src/`: Angular arayüzü.
+- `backend/tests/` ve `frontend/e2e/`: sentetik verilerle çalışan otomatik regresyon testleri.
+- `backend/scripts/`: genel değerlendirme ve bakım araçları; kişisel değerlendirme verileri haricen sağlanır.
+- `backend/data/`: Docker çalışmasında oluşan SQLite, kaynaklar ve dönüşüm çıktıları; Git'e alınmaz.
+- Qdrant indeksleri ve embedding model önbelleği ayrı Docker volume'larında tutulur.
+
+Backend'i yerel terminalden çalıştırırken önce `cd backend` kullanın; böylece
+proje kökünde ikinci bir `data/` veritabanı oluşmaz. İndirilen ders dosyalarını ve
+test raporlarını kaynak kodun içine koymayın. `node_modules` ve `.venv` kurulu
+geliştirme bağımlılıklarıdır; uygulama verisi değildir.
+
+### Otomatik testler
+
+Backend testlerini GPU ortamında, gerçek veritabanından ayrı çalıştırın:
+
+```bash
+docker compose -f compose.yaml -f compose.gpu.yaml run --rm --no-deps \
+  -v "$PWD/backend/tests:/app/tests:ro" \
+  -e DATABASE_URL=sqlite:////tmp/konulab-tests.db \
+  -e STORAGE_PATH=/tmp/konulab-test-sources \
+  api python -m pytest tests -q
+```
+
+Tarayıcı regresyonları için `frontend` klasöründe `npm run e2e` kullanın. Bu
+testler API yanıtlarını taklit eder; gerçek ders veya kullanıcı verisi oluşturmaz.
 
 ## Vektör indeksleme akışı
 
@@ -142,30 +177,126 @@ akışını başlatır. Böylece eksik veya hatalı dönüşümün öğrenme har
 değiştirmesi engellenir. Orijinal dosya ve Markdown, kaynak silinene kadar aynı
 kalıcı sürüm klasöründe tutulur.
 
-Korunan her tablo veya görsel otomatik olarak dışarı gönderilmez. Kullanıcı
+PDF tabloları hücre kapsamı ve kaynak metin eşleşmesiyle denetlenir. Şüpheli
+tablolar kaynak PDF'den kırpılmış görüntüleriyle seçili görsel modele sırayla
+otomatik gönderilir. Model çıktısında hücre kapsamı, birleşmeler, kaynak kelimeler
+ve sayılar denetlenir; yapısal hata varsa bir kez yeniden denenir. Modelin güven
+puanı tek başına doğruluk sayılmaz. Öneri ayrı saklanır; özgün tablo ve kaynak
+görüntü kullanıcı onayına kadar korunur. Tam doğrulanamayan öneriler açıkça
+işaretlenir ve toplu kabul edilmez. Her şüpheli tablo için öneriyi kabul etmek
+veya özgün kaynağı korumak seçilmeden öğrenme haritasına yayınlama açılmaz.
+Görsel model erişilemiyorsa kaynak kaybolmaz; yeniden deneme yapılabilir.
+
+İlk öneride kaynak eşleşmesi belirsizse ikinci aşama otomatik çalışır: şüpheli
+sözcükler PDF'nin özgün koordinatlarından 576 DPI kırpılır; uyuşmazlıkta 720 DPI
+ile bir kez daha okunur. Önceki yanlış okuma modele gösterilmez. Düzeltme yalnız
+bağımsız PDF metniyle görsel okuma uzlaşırsa öneriye uygulanır. Görsel model iki
+denemede de uzlaşamazsa, Türkçe Tesseract OCR'ın en az %85 güvenli okuması PDF
+metniyle birebir eşleştiğinde alternatif kanıt olarak kullanılabilir. Hangi kanıtla
+düzeltildiği günlüğe yazılır; yalnız modelin kendi güven puanıyla karar verilmez. Hücre konumları ve
+sayılar yeniden denetlenir. Tablo bütünü de yüksek çözünürlükte başlık/birleşme
+açısından kontrol edilir. Kaynakta doğrulanan çevre başlıkları ayrı tablo bağlamı
+olarak korunur. İş başına en fazla 16 şüpheli sözcük incelenir; kalanlar insan
+incelemesinde kalır. Metin katmanı/koordinat bulunamayan taramalarda veya model
+yanıt vermediğinde doğrulama başarısı iddia edilmez. İnceleme ekranındaki
+“Şüpheli hücreleri yüksek çözünürlükte kontrol et” düğmesi aynı akışı mevcut
+öneride yeniden çalıştırır. Kırpımlar ve değişiklik günlüğü kaynak sürümünün
+`assets-v.../refinement-.../` klasöründe, özet SQLite'daki tablo önerisinde saklanır.
+
+Diğer tablo veya görseller otomatik olarak modele gönderilmez. Kullanıcı
 inceleme ekranında tek tek, seçerek veya tamamı için vision destekli yerel modeli
 (`qwen3.8:27b` varsayılanı) çalıştırabilir. Açıklama taslak olarak kalır;
 Markdown'a ancak kullanıcı kabul ederse eklenir. Kabul edilen görsel, Docling'in
 orijinal yer işaretine göreli `assets/...` bağlantısıyla; tablo açıklaması ise
-yapısal Markdown tablosunun hemen altında yazılır. Açıklama hazırlanırken
+yapısal Markdown tablosunun hemen altında yazılır. Görsel açıklaması ana öğe ve
+ilişkiyi anlatan 2–3 kısa cümle hedefler (350 karakter hedefi, 450 karakter kesin
+sınırı); okunamayan içerik tahmin edilmez. Açıklama taslağı aynı kaynak görselle
+ikinci model çağrısında nesne/panel ilişkileri açısından kontrol edilir; bu kontrol
+insan onayının yerini almaz ve görsel başına iki çağrı gerektirir. Görsel model ayarları bulut sağlayıcıya
+yöneltilmişse bu görüntüler de o sağlayıcıya gönderilir. Açıklama hazırlanırken
 yayınlama kapalıdır. Bu sayede görsel bağlamı ancak kullanıcı görebildikten sonra
 konu analizi ve indeksleme akışına girer.
 
 ### Dönüşüm kalite değerlendirmesi
 
-`backend/evals/conversion_quality_benchmark.json`, gerçek yerel örnekler için
-insan tarafından onaylanmış minimum Markdown uzunluğu, sayfa, tablo ve görsel
-eşiğini tutar; dosyaların kendisini depoya kopyalamaz. Dönüştürme davranışını
-değiştiren her güncellemeden sonra şu komut çalıştırılmalıdır:
+Gerçek belge değerlendirmeleri isteğe bağlıdır; kitaplar veya kişisel belgeler
+depoya eklenmez. Kendi manifest'inizi (bir JSON listesinde `name`, göreli `source`
+ve `expectations` alanları) ve kaynak klasörünüzü açıkça verin:
 
 ```bash
-docker compose -f compose.yaml -f compose.gpu.yaml exec -T api \
-  python scripts/evaluate_conversion_quality.py --source-root /workspace
+python scripts/evaluate_conversion_quality.py \
+  --manifest /inputs/manifest.json --source-root /inputs
 ```
 
-Yeni örnek önce elle incelenir; ardından manifest'e göreli yol ve yeterince
-kararlı eşikler eklenir. Böylece OCR, tablo ve görsel içeren kaynaklar için
-kalite gerilemesi ölçülebilir hale gelir.
+Komut backend ortamında çalışır; Docker kullanıyorsanız harici kaynak klasörünü
+salt okunur bağlayın. Manifest verilmeden gerçek belge değerlendirmesi başlatılmaz.
+Otomatik testler ise büyük belge dosyalarına ihtiyaç duymadan çalışır.
+
+## İsteğe bağlı bağlam ve matematik gösterimi
+
+Konu taslağını onaylamadan önce **Yapay zekâ ile arama bağlamını zenginleştir**
+seçeneği açılabilir; varsayılan kapalıdır. Seçili metin modeli her parçaya kısa
+arama bağlamı üretir. Kaynak dosyası ve `DocumentSection.content` değişmez;
+bağlam, model/sağlayıcı, istem sürümü ve kaynak parmak izi SQLite'da ayrı saklanır.
+Bağlam yalnız dense/BM25 arama girdisine eklenir, alıntı olarak kullanılmaz.
+Model hatasında özgün içerikle devam edilir. Token bütçesine sığmayan bağlam
+atlanır; kaynak metin kesilmez. Tamamlanma mesajı kullanılan bağlam sayısını bildirir.
+Bu seçenek daha uzun indeksleme süresi gerektirir ve her belgede kalite artışı garanti etmez.
+
+İndekslenmiş belgede **Kaynaklar → belgeyi aç → Arama bağlamı** alanından
+açıp kapatın ve **Ayarı uygula ve yeniden indeksle** düğmesine basın. İş durumu,
+ilerleme ve hedef ayar SQLite'da saklanır; sayfa yenilendiğinde takip devam eder.
+Yeni ayar başarılı indeks yazımından sonra geçerli olur. Kapatma kaynak metni,
+konu eşleşmelerini veya öğrenme ilerlemesini değiştirmez; ayrı bağlam önbelleğini
+silmez. Tekrar açıldığında kaynak/model/istem değişmemişse önbellek kullanılır.
+`/reindex` ve `/rechunk-reindex` yolları da bağlamı denetler/yeniden üretir.
+Sunucu yeniden başlarken yarım işler başarısız/yeniden denenebilir olarak işaretlenir.
+Bu yerel iş yürütücüsü tek API süreci içindir; çoklu worker dağıtımı desteklenmez.
+
+PDF dönüşümünde Docling formül zenginleştirmesi açıktır; ilk kullanımda
+CodeFormulaV2 modeli indirilir ve model önbelleğinde tutulur. Okunamayan formüller
+inceleme uyarısına dönüşür. Öğrenme, sohbet, özet, quiz, kaynak ve Markdown
+inceleme alanları `$…$`, `$$…$$`, `\\(…\\)`, `\\[…\\]` ifadelerini KaTeX ile
+gösterir. Kod blokları korunur; kaynak HTML çalıştırılmaz. KaTeX ve fontları
+uygulamaya dahildir, gösterim için CDN/internet gerekmez. Formülün çizilmesi
+matematiksel doğruluğunun doğrulandığı anlamına gelmez.
+
+PDF formülleri, yüksek çözünürlüklü kaynak kırpımını **taslağı görmeden** okuyan
+seçili görsel modelle karşılaştırılır. LaTeX yapısı ve PDF metin katmanındaki
+harf/rakam/işaret kapsamı ayrıca denetlenir. Uyuşmazlık, eksik kaynak konumu veya
+model hatasında ifade değiştirilmez: **İnceleme gerekli** gösterilir. Kalite
+panelinde özgün kırpım, çıkarılan formül ve bağımsız okuma aynı yerde incelenebilir.
+PDF metin katmanı bazı matematik işaretlerini içermeyebilir; bu da ihtiyatlı bir
+inceleme uyarısı doğurabilir. Uyarılı veya sonradan düzenlenen formüllerle yayın,
+yalnız kullanıcının açık onayıyla yapılır; onay tam Markdown sürüm karmasına bağlanır.
+Bu denetimler eşdeğerlik veya matematiksel doğruluk ispatı değildir.
+
+### Gerçek modellerle uçtan uca doğrulama
+
+Normal `npm run e2e` testleri hızlı ve izoledir. Gerçek model testi varsayılan
+atlıdır; ayrı SQLite/kaynak klasörü ve ayrı Qdrant koleksiyonuyla çalışan API
+hazırlayın. Test API'si `http://127.0.0.1:8002` üzerinde ve CORS izinleri
+`http://127.0.0.1:4201` için açık olmalıdır. Kullanıcı veritabanını kullanmayın.
+GPU test ortamında `scripts/create_formula_test_pdf.py --output /tmp/formulas.pdf`
+ile küçük Bayes/kök formülü PDF'si üretilebilir; büyük test belgeleri depoya eklenmez.
+
+Frontend klasöründe:
+
+```bash
+KONULAB_REAL_E2E=1 \
+KONULAB_REAL_API=http://127.0.0.1:8002 \
+KONULAB_REAL_PDF=/tmp/formulas.pdf \
+npm run e2e -- real-model-learning.spec.ts --workers=1 --retries=0
+```
+
+Bu test API/model yanıtlarını taklit etmez; yalnız ağ hedefini ayrı API'ye yönlendirir.
+PDF yükleme, formül denetimi/kaynak görüntüsü, açık onay, konu analizi, bağlam üretimi,
+Qdrant araması, öğrenme ekranında formül çizimi, sonradan açma/kapatma ve kaynak
+metinlerinin değişmemesi doğrulanır. Test verisi ayrı ortamda kalır; bu ortamı
+doğrulama sonrasında kaldırın.
+
+Uygulama ayrıntıları: [Docling formül zenginleştirmesi](https://docling-project.github.io/docling/usage/enrichments/)
+ve [KaTeX güvenlik/gösterim seçenekleri](https://katex.org/docs/options).
 
 ## GX10 kaynak kullanımı
 
